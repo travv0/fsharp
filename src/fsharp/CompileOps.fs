@@ -1022,7 +1022,7 @@ let OutputPhasedErrorR (os: StringBuilder) (err: PhasedDiagnostic) (canSuggestNa
               | Parser.TOKEN_QMARK -> getErrorString("Parser.TOKEN.QMARK")
               | Parser.TOKEN_QMARK_QMARK -> getErrorString("Parser.TOKEN.QMARK.QMARK")
               | Parser.TOKEN_COLON_QMARK-> getErrorString("Parser.TOKEN.COLON.QMARK")
-              | Parser.TOKEN_INT32_DOT_DOT -> getErrorString("Parser.TOKEN.INT32.DOT.DOT")
+              | Parser.TOKEN_INT_DOT_DOT -> getErrorString("Parser.TOKEN.INT.DOT.DOT")
               | Parser.TOKEN_DOT_DOT -> getErrorString("Parser.TOKEN.DOT.DOT")
               | Parser.TOKEN_DOT_DOT_HAT -> getErrorString("Parser.TOKEN.DOT.DOT")
               | Parser.TOKEN_QUOTE -> getErrorString("Parser.TOKEN.QUOTE")

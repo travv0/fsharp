@@ -2227,12 +2227,13 @@ type LexFilterImpl (lightSyntaxStatus: LightSyntaxStatus, compilingFsLib, lexer,
               true
 
           // Split this token to allow "1..2" for range specification 
-          | INT32_DOT_DOT (i, v) ->
+          | INT_DOT_DOT (s) ->
               let dotDotPos = new LexbufState(tokenTup.EndPos.ShiftColumnBy(-2), tokenTup.EndPos, false)
               delayToken(let rented = pool.Rent() in rented.Token <- DOT_DOT; rented.LexbufState <- dotDotPos; rented.LastTokenPos <- tokenTup.LastTokenPos; rented)
-              delayToken(pool.UseShiftedLocation(tokenTup, INT32(i, v), 0, -2))
+              delayToken(pool.UseShiftedLocation(tokenTup, INT(s), 0, -2))
               pool.Return tokenTup
               true
+
           // Split @>. and @@>. into two 
           | RQUOTE_DOT (s, raw) ->
               let dotPos = new LexbufState(tokenTup.EndPos.ShiftColumnBy(-1), tokenTup.EndPos, false)
@@ -2289,7 +2290,7 @@ type LexFilterImpl (lightSyntaxStatus: LightSyntaxStatus, compilingFsLib, lexer,
                   | INT8(v, bad) -> delayMergedToken(INT8((if plus then v else -v), (plus && bad))) // note: '-' makes a 'bad' max int 'good'. '+' does not
                   | INT16(v, bad) -> delayMergedToken(INT16((if plus then v else -v), (plus && bad))) // note: '-' makes a 'bad' max int 'good'. '+' does not
                   | INT32(v, bad) -> delayMergedToken(INT32((if plus then v else -v), (plus && bad))) // note: '-' makes a 'bad' max int 'good'. '+' does not
-                  | INT32_DOT_DOT(v, bad) -> delayMergedToken(INT32_DOT_DOT((if plus then v else -v), (plus && bad))) // note: '-' makes a 'bad' max int 'good'. '+' does not
+                  | INT_DOT_DOT(v) -> delayMergedToken(INT_DOT_DOT((if plus then v else "-" + v)))
                   | INT64(v, bad) -> delayMergedToken(INT64((if plus then v else -v), (plus && bad))) // note: '-' makes a 'bad' max int 'good'. '+' does not
                   | NATIVEINT v -> delayMergedToken(NATIVEINT(if plus then v else -v))
                   | IEEE32 v -> delayMergedToken(IEEE32(if plus then v else -v))

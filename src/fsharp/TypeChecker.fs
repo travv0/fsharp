@@ -925,6 +925,10 @@ let TcConst cenv ty m env c =
     | SynConst.Bool i -> unif cenv.g.bool_ty; Const.Bool i
     | SynConst.SByte i -> unif cenv.g.sbyte_ty; Const.SByte i
     | SynConst.Int16 i -> unif cenv.g.int16_ty; Const.Int16 i
+    | SynConst.Int s ->
+        unif cenv.g.int_ty
+        let i = ParseHelpers.parseInt32 CompileThreadStatic.ErrorLogger m s
+        Const.Int32 i
     | SynConst.Int32 i -> unif cenv.g.int_ty; Const.Int32 i
     | SynConst.Int64 i -> unif cenv.g.int64_ty; Const.Int64 i
     | SynConst.IntPtr i -> unif cenv.g.nativeint_ty; Const.IntPtr i
@@ -936,10 +940,18 @@ let TcConst cenv ty m env c =
     | SynConst.Measure(SynConst.Single f, _) | SynConst.Single f -> unifyMeasureArg (f=0.0f) cenv.g.pfloat32_tcr c; Const.Single f
     | SynConst.Measure(SynConst.Double f, _) | SynConst.Double f -> unifyMeasureArg (f=0.0) cenv.g.pfloat_tcr c; Const.Double f
     | SynConst.Measure(SynConst.Decimal s, _) | SynConst.Decimal s -> unifyMeasureArg false cenv.g.pdecimal_tcr c; Const.Decimal s
-    | SynConst.Measure(SynConst.SByte i, _) | SynConst.SByte i -> unifyMeasureArg (i=0y) cenv.g.pint8_tcr c; Const.SByte i
-    | SynConst.Measure(SynConst.Int16 i, _) | SynConst.Int16 i -> unifyMeasureArg (i=0s) cenv.g.pint16_tcr c; Const.Int16 i
-    | SynConst.Measure(SynConst.Int32 i, _) | SynConst.Int32 i -> unifyMeasureArg (i=0) cenv.g.pint_tcr c; Const.Int32 i
-    | SynConst.Measure(SynConst.Int64 i, _) | SynConst.Int64 i -> unifyMeasureArg (i=0L) cenv.g.pint64_tcr c; Const.Int64 i
+    | SynConst.Measure(SynConst.SByte i, _) -> unifyMeasureArg (i=0y) cenv.g.pint8_tcr c; Const.SByte i
+    | SynConst.Measure(SynConst.Int16 i, _) -> unifyMeasureArg (i=0s) cenv.g.pint16_tcr c; Const.Int16 i
+    | SynConst.Measure(SynConst.Int32 i, _) -> unifyMeasureArg (i=0) cenv.g.pint_tcr c; Const.Int32 i
+    | SynConst.Measure(SynConst.Int64 i, _) -> unifyMeasureArg (i=0L) cenv.g.pint64_tcr c; Const.Int64 i
+    | SynConst.Measure(SynConst.Int s, _) ->
+        let i = ParseHelpers.parseInt32 CompileThreadStatic.ErrorLogger m s
+        unifyMeasureArg (i=0) cenv.g.pint_tcr c
+        Const.Int32 i
+    | SynConst.Measure(SynConst.Floating s, _) | SynConst.Floating s ->
+        let i = ParseHelpers.parseDouble CompileThreadStatic.ErrorLogger m s
+        unifyMeasureArg (i=0.0) cenv.g.pfloat_tcr c
+        Const.Double i
     | SynConst.Char c -> unif cenv.g.char_ty; Const.Char c
     | SynConst.String (s, _) -> unif cenv.g.string_ty; Const.String s
     | SynConst.UserNum _ -> error (InternalError(FSComp.SR.tcUnexpectedBigRationalConstant(), m))
@@ -5283,6 +5295,22 @@ and TcPat warnOnUpper cenv env topValInfo vFlags (tpenv, names, takenNames) ty p
             errorR (Error (FSComp.SR.tcInvalidNonPrimitiveLiteralInPatternMatch (), m))
             (fun _ -> TPat_error m), (tpenv, names, takenNames)
 
+        | SynConst.Int s -> 
+            match TcConstUnadornedIntConst cenv ty env m s with 
+            | Some c' -> 
+                (fun _ -> TPat_const (c', m)), (tpenv, names, takenNames)
+            | None -> 
+                UnifyTypes cenv env m ty cenv.g.int_ty  // this will raise an error
+                failwith "unreachable"
+
+        | SynConst.Floating s -> 
+            match TcConstUnadornedFloatingConst cenv ty env m s with 
+            | Some c' -> 
+                (fun _ -> TPat_const (c', m)), (tpenv, names, takenNames)
+            | None -> 
+                UnifyTypes cenv env m ty cenv.g.float_ty // this will raise an error
+                failwith "unreachable"
+
         | _ ->
             try
                 let c' = TcConst cenv ty m env c
@@ -7071,11 +7099,91 @@ and TcObjectExpr cenv overallTy env tpenv (synObjTy, argopt, binds, extraImpls, 
         let expr = mkCoerceIfNeeded cenv.g realObjTy objTy' expr
         expr, tpenv
 
-
-
 //-------------------------------------------------------------------------
 // TcConstStringExpr
 //------------------------------------------------------------------------- 
+
+/// Check an unadorned int constant (patterns or expressions)
+and TcConstUnadornedIntConst cenv overallTy (env: TcEnv) m s =
+    if (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.int_ty) then 
+        let i = ParseHelpers.parseInt32 CompileThreadStatic.ErrorLogger m s
+        Const.Int32 i |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.float_ty) then 
+        let i = ParseHelpers.parseDouble CompileThreadStatic.ErrorLogger m s
+        Const.Double i |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.float32_ty) then 
+        let i = ParseHelpers.parseSingle CompileThreadStatic.ErrorLogger m s
+        Const.Single i |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.sbyte_ty) then 
+        let i = ParseHelpers.parseSmallInt CompileThreadStatic.ErrorLogger m s
+        let i2 = ParseHelpers.convSmallIntToSByte CompileThreadStatic.ErrorLogger m i
+        Const.SByte i2 |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.byte_ty) then 
+        let i = ParseHelpers.parseSmallInt CompileThreadStatic.ErrorLogger m s
+        let i2 = ParseHelpers.convSmallIntToByte CompileThreadStatic.ErrorLogger m i
+        Const.Byte i2 |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.int16_ty) then 
+        let i = ParseHelpers.parseSmallInt CompileThreadStatic.ErrorLogger m s
+        let i2 = ParseHelpers.convSmallIntToInt16 CompileThreadStatic.ErrorLogger m i
+        Const.Int16 i2 |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.uint16_ty) then 
+        let i = ParseHelpers.parseSmallInt CompileThreadStatic.ErrorLogger m s
+        let i2 = ParseHelpers.convSmallIntToUInt16 CompileThreadStatic.ErrorLogger m i
+        Const.UInt16 i2 |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.uint32_ty) then 
+        let i2 = ParseHelpers.parseUInt32 CompileThreadStatic.ErrorLogger m s
+        Const.UInt32 i2 |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.int64_ty) then 
+        let i2 = ParseHelpers.parseInt64 CompileThreadStatic.ErrorLogger m s
+        Const.Int64 i2 |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.uint64_ty) then 
+        let i2 = ParseHelpers.parseUInt64 CompileThreadStatic.ErrorLogger m s
+        Const.UInt64 i2 |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.nativeint_ty) then 
+        let i2 = ParseHelpers.parseNativeInt CompileThreadStatic.ErrorLogger m s
+        Const.IntPtr i2 |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.unativeint_ty) then 
+        let i2 = ParseHelpers.parseUNativeInt CompileThreadStatic.ErrorLogger m s
+        Const.UIntPtr i2 |> Some
+    else
+        None
+
+/// Check an unadorned int constant (patterns or expressions)
+and TcConstUnadornedFloatingConst cenv overallTy (env: TcEnv) m s =
+    if (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.float_ty) then 
+        let i = ParseHelpers.parseDouble CompileThreadStatic.ErrorLogger m s
+        Const.Double i |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.float32_ty) then 
+        let i = ParseHelpers.parseSingle CompileThreadStatic.ErrorLogger m s
+        Const.Single i |> Some
+    elif (AddCxTypeEqualsTypeUndoIfFailed env.DisplayEnv cenv.css m overallTy cenv.g.decimal_ty) then 
+        let i = ParseHelpers.parseDecimal CompileThreadStatic.ErrorLogger m s
+        Const.Decimal i |> Some
+    else
+        None
+
+/// Check a constant int expression
+and TcConstUnadornedIntExpr cenv overallTy (env: TcEnv) m tpenv s =
+    match TcConstUnadornedIntConst cenv overallTy env m s with 
+    | Some c -> Expr.Const (c, m, overallTy), tpenv
+    | None -> 
+        // TODO: allow op_Implicit here (but not for pattern matching)
+        UnifyTypes cenv env m overallTy cenv.g.int_ty
+        failwith "unreachable"
+
+/// Check a constant int expression
+and TcConstUnadornedFloatExpr cenv overallTy (env: TcEnv) m tpenv s =
+    match TcConstUnadornedFloatingConst cenv overallTy env m s with 
+    | Some c -> Expr.Const (c, m, overallTy), tpenv
+    | None -> 
+        // TODO: allow op_Implicit here (but not for pattern matching)
+        UnifyTypes cenv env m overallTy cenv.g.float_ty
+        failwith "unreachable"
+
+(*
+TODO: consider measure types, e.g. "1<kg>" being used as "int64<kg>"
+    | SynConst.Measure(SynConst.Int s, _) -> ...
+*)
 
 /// Check a constant string expression. It might be a 'printf' format string 
 and TcConstStringExpr cenv overallTy env m tpenv s =
@@ -7116,6 +7224,12 @@ and TcConstStringExpr cenv overallTy env m tpenv s =
 /// Check a constant expression. 
 and TcConstExpr cenv overallTy env m tpenv c =
     match c with 
+
+    | SynConst.Int s -> 
+        TcConstUnadornedIntExpr cenv overallTy env m tpenv s
+
+    | SynConst.Floating s -> 
+        TcConstUnadornedFloatExpr cenv overallTy env m tpenv s
 
     // NOTE: these aren't "really" constants 
     | SynConst.Bytes (bytes, m) -> 

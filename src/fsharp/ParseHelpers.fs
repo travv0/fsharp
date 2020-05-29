@@ -2,6 +2,8 @@
 
 module public FSharp.Compiler.ParseHelpers
 
+open System
+open System.Globalization
 open FSharp.Compiler.AbstractIL
 open FSharp.Compiler.ErrorLogger
 open FSharp.Compiler.Features
@@ -232,3 +234,168 @@ let ParseAssemblyCodeType s m =
     // Public API can not answer the isFeatureSupported questions, so here we support everything
     let isFeatureSupported (_featureId:LanguageFeature) = true
     internalParseAssemblyCodeType s isFeatureSupported m
+
+//--------------------------
+// Integer parsing
+
+// Parsing integers is common in bootstrap runs (parsing
+// the parser tables, no doubt). So this is an optimized
+// version of the F# core library parsing code with the call to "Trim"
+// removed, which appears in profiling runs as a small but significant cost.
+
+let getSign32 (s:string) (p:byref<int>) l = 
+    if (l >= p + 1 && s.[p] = '-') then
+        p <- p + 1; -1 
+    elif (l >= p + 1 && s.[p] = '+') then
+        p <- p + 1; 1 
+    else 1 
+
+let isOXB c = 
+    let c = Char.ToLowerInvariant c
+    c = 'x' || c = 'o' || c = 'b'
+
+let is0OXB (s:string) p l = 
+    l >= p + 2 && s.[p] = '0' && isOXB s.[p+1]
+
+let get0OXB (s:string) (p:byref<int>)  l = 
+    if is0OXB s p l
+    then let r = Char.ToLowerInvariant s.[p+1] in p <- p + 2; r
+    else 'd' 
+
+let parseBinaryUInt64 (s:string) = 
+    Convert.ToUInt64(s, 2)
+
+let parseOctalUInt64 (s:string) =
+    Convert.ToUInt64(s, 8)
+
+let parseSmallInt (errorLogger: ErrorLogger) m (s: string) =
+    try
+        let l = s.Length 
+        let mutable p = 0 
+        let sign = getSign32 s &p l 
+        let specifier = get0OXB s &p l 
+        match Char.ToLower(specifier,CultureInfo.InvariantCulture) with 
+        | 'x' -> sign * (int32 (Convert.ToUInt32(UInt64.Parse(s.Substring(p), NumberStyles.AllowHexSpecifier,CultureInfo.InvariantCulture))))
+        | 'b' -> sign * (int32 (Convert.ToUInt32(parseBinaryUInt64 (s.Substring(p)))))
+        | 'o' -> sign * (int32 (Convert.ToUInt32(parseOctalUInt64  (s.Substring(p)))))
+        | _ -> Int32.Parse(s, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture)
+    with _ ->
+        errorLogger.ErrorR(Error(FSComp.SR.lexOutsideIntegerRange(), m))
+        0
+
+let parseInt32AllowMaxIntPlusOne (errorLogger: ErrorLogger) m s =
+    // Allow <max_int+1> to parse as min_int.  Allowed only because we parse '-' as an operator. 
+    if s = "2147483648" then 
+        (-2147483648,true) 
+    else
+        let n = 
+            try int32 s 
+            with _ ->  
+                errorLogger.ErrorR(Error(FSComp.SR.lexOutsideThirtyTwoBitSigned(),m))
+                0
+        n, false
+
+let parseInt32 (errorLogger: ErrorLogger) m s =
+    let n, fail = parseInt32AllowMaxIntPlusOne errorLogger m s
+    if fail then errorR(Error(FSComp.SR.lexOutsideThirtyTwoBitSigned(), m))
+    n
+
+let parseUInt32 (errorLogger: ErrorLogger) m (s: string) =
+    let n = 
+        try int64 s 
+        with _ ->  
+             errorLogger.ErrorR(Error(FSComp.SR.lexOutsideThirtyTwoBitUnsigned(), m))
+             0L
+    if n > 0xFFFFFFFFL || n < 0L then 
+        errorLogger.ErrorR(Error(FSComp.SR.lexOutsideThirtyTwoBitUnsigned(), m))
+        0u
+    else
+        uint32 (uint64 n)
+
+let parseInt64AllowMaxIntPlusOne (errorLogger: ErrorLogger) m s =
+    // Allow <max_int+1> to parse as min_int.  Stupid but allowed because we parse '-' as an operator. 
+    if s = "9223372036854775808" then 
+        (-9223372036854775808L,true) 
+    else
+        try int64 s, false
+        with _ ->  
+            errorLogger.ErrorR(Error(FSComp.SR.lexOutsideSixtyFourBitSigned(), m))
+            0L, false
+
+let parseInt64 (errorLogger: ErrorLogger) m s =
+    let n, fail = parseInt64AllowMaxIntPlusOne errorLogger m s
+    if fail then errorR(Error(FSComp.SR.lexOutsideSixtyFourBitSigned(), m))
+    n
+
+let parseUInt64 (errorLogger: ErrorLogger) m (s: string) =
+    try uint64 s 
+    with _ ->
+        errorLogger.ErrorR(Error(FSComp.SR.lexOutsideSixtyFourBitUnsigned(), m))
+        0UL
+
+let parseNativeInt (errorLogger: ErrorLogger) m (s: string) =
+    try 
+        int64 s
+    with _ ->  
+        errorLogger.ErrorR(Error(FSComp.SR.lexOutsideNativeSigned(), m))
+        0L
+
+let parseUNativeInt (errorLogger: ErrorLogger) m (s: string) =
+    try 
+        uint64 s
+    with _ ->  
+        errorLogger.ErrorR(Error(FSComp.SR.lexOutsideNativeSigned(), m))
+        0UL
+
+let convSmallIntToSByteAllowMaxIntPlusOne (errorLogger: ErrorLogger) m n =
+    if n > 0x80 || n < -0x80 then
+        errorLogger.ErrorR(Error(FSComp.SR.lexOutsideEightBitSigned(),m))
+        0y,false
+    elif n = 0x80 then (sbyte(-0x80), true (* 'true' = 'bad'*) )
+    else (sbyte n, false)
+
+let convSmallIntToSByte (errorLogger: ErrorLogger) m n =
+    let n, mpo = convSmallIntToSByteAllowMaxIntPlusOne errorLogger m n
+    if mpo then errorR(Error(FSComp.SR.lexOutsideEightBitSigned(), m))
+    n
+
+let convSmallIntToInt16AllowMaxIntPlusOne (errorLogger: ErrorLogger) m n =
+    if n > 0x8000 || n < -0x8000 then
+        errorLogger.ErrorR(Error(FSComp.SR.lexOutsideSixteenBitSigned(),m))
+        0s,false
+    elif n = 0x8000 then (-0x8000s, true (* 'true' = 'bad'*) )
+    else (int16 n, false)
+
+let convSmallIntToInt16 (errorLogger: ErrorLogger) m n =
+    let n, mpo = convSmallIntToInt16AllowMaxIntPlusOne errorLogger m n
+    if mpo then errorR(Error(FSComp.SR.lexOutsideSixteenBitSigned(), m))
+    n
+
+let convSmallIntToByte (errorLogger: ErrorLogger) m n =
+    if n > 0xFF || n < 0 then
+        errorLogger.ErrorR(Error(FSComp.SR.lexOutsideEightBitUnsigned(), m))
+        0uy
+    else
+        byte n
+
+let convSmallIntToUInt16 (errorLogger: ErrorLogger) m n =
+    if n > 0xFFFF || n < 0 then
+        errorLogger.ErrorR(Error(FSComp.SR.lexOutsideSixteenBitUnsigned(), m))
+        0us
+    else
+        uint16 n
+
+let parseDouble (errorLogger: ErrorLogger) m (s: string) =
+    try float s with _ -> errorLogger.ErrorR(Error(FSComp.SR.lexInvalidFloat(), m)); 0.0
+
+let parseSingle (errorLogger: ErrorLogger) m (s: string) =
+    try float32 s with _ -> errorLogger.ErrorR(Error(FSComp.SR.lexInvalidFloat(), m)); 0.0f
+
+let parseDecimal (errorLogger: ErrorLogger) m (s: string) =
+    try 
+        // This implements a range check for decimal literals 
+        let d = System.Decimal.Parse(s,NumberStyles.AllowExponent ||| NumberStyles.Number, CultureInfo.InvariantCulture)
+        d 
+    with e ->
+        errorLogger.ErrorR(Error(FSComp.SR.lexOusideDecimal(), m))
+        decimal 0

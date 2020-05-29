@@ -315,7 +315,7 @@
   <data name="Parser.TOKEN.COLON.QMARK" xml:space="preserve">
     <value>symbol ':?'</value>
   </data>
-  <data name="Parser.TOKEN.INT32.DOT.DOT" xml:space="preserve">
+  <data name="Parser.TOKEN.INT.DOT.DOT" xml:space="preserve">
     <value>integer..</value>
   </data>
   <data name="Parser.TOKEN.DOT.DOT" xml:space="preserve">

@@ -141,7 +141,7 @@ module FSharpTokenTag =
     /// Indicates the token is a `..`
     val DOT_DOT_HAT : int
     /// Indicates the token is a `..^`
-    val INT32_DOT_DOT : int
+    val INT_DOT_DOT : int
     /// Indicates the token is a `..`
     val UNDERSCORE : int
     /// Indicates the token is a `_`
@@ -447,7 +447,7 @@ module public Lexer =
         | UInt8
         | Int64
         | Int32
-        | Int32DotDot
+        | IntDotDot
         | Int16
         | Int8
         | FunkyOperatorName

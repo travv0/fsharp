@@ -3,6 +3,7 @@
 module internal FSharp.Compiler.Lexhelp
 
 open System
+open System.Globalization
 open System.Text
 
 open Internal.Utilities

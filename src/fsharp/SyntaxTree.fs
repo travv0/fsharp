@@ -103,8 +103,11 @@ type SynConst =
     /// F# syntax: 13us, 0x4000us, 0o0777us, 0b0111101us
     | UInt16 of uint16
 
-    /// F# syntax: 13, 0x4000, 0o0777
+    /// F# syntax: 13l, 0x4000l, 0o0777l
     | Int32 of int32
+
+    /// F# syntax 13, 0x4000, 0o0777
+    | Int of string
 
     /// F# syntax: 13u, 0x4000u, 0o0777u
     | UInt32 of uint32
@@ -124,8 +127,10 @@ type SynConst =
     /// F# syntax: 1.30f, 1.40e10f etc.
     | Single of single
 
-    /// F# syntax: 1.30, 1.40e10 etc.
     | Double of double
+
+    /// F# syntax: 1.30, 1.40e10 etc.
+    | Floating of string
 
     /// F# syntax: 'a'
     | Char of char
