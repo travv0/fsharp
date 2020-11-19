@@ -464,6 +464,8 @@ type ILAssemblyRef(data) =
                 add ", Retargetable=Yes"
         b.ToString()
 
+    member x.ToAssemblyName() = AssemblyName(x.QualifiedName)
+
 
 [<StructuralEquality; StructuralComparison>]
 type ILModuleRef =

@@ -51,6 +51,7 @@ open FSharp.Compiler.OptimizeInputs
 open FSharp.Compiler.ScriptClosure
 open FSharp.Compiler.SyntaxTree
 open FSharp.Compiler.Range
+open FSharp.Compiler.Text
 open FSharp.Compiler.TypedTree
 open FSharp.Compiler.TypedTreeBasics
 open FSharp.Compiler.TypedTreeOps
@@ -209,6 +210,16 @@ let TypeCheck (ctok, tcConfig, tcImports, tcGlobals, errorLogger: ErrorLogger, a
         exiter.Exit 1
 
 /// Check for .fsx and, if present, compute the load closure for of #loaded files.
+///
+/// This is the "script compilation" feature that has always been present in the F# compiler, that allows you to compile scripts
+/// and get the load closure and references from them. This applies even if the script is in a project (with 'Compile' action), for example.
+///
+/// Any DLL references implied by package references are also retrieved from the script.
+///
+/// When script compilation is invoked, the outputs are not necessarily a functioning application - the referenced DLLs are not
+/// copied to the output folder, for example (except perhaps FSharp.Core.dll).
+///
+/// NOTE: there is similar code in IncrementalBuilder.fs and this code should really be reconciled with that
 let AdjustForScriptCompile(ctok, tcConfigB: TcConfigBuilder, commandLineSourceFiles, lexResourceManager, dependencyProvider) =
 
     let combineFilePath file =
@@ -222,32 +233,65 @@ let AdjustForScriptCompile(ctok, tcConfigB: TcConfigBuilder, commandLineSourceFi
         commandLineSourceFiles 
         |> List.map combineFilePath
         
+    // Script compilation is active if the last item being compiled is a script and --noframework has not been specified
     let mutable allSources = []       
-    
+
+    // In script compilation, we pre-infer the kind of scripts expected based on the compilation flags coming in on the command line.
+    //
+    // This has the following effect:
+    //    If --targetprofile:netcore has been specified, and a #netfx declaration exists in a script, then give a warning
+    //    If --targetprofile:mscorlib has been specified, and a #netcore declaration exists in a script, then give a warning
+    //    If --targetprofile:netstandard has been specified, and either a #netcore or #netfx declaration exists in a script, then give a warning
+    if commandLineSourceFiles |> List.exists IsScript && tcConfigB.inferredTargetFrameworkForScripts.IsNone then
+        let targetFrameworkForScripts =
+            match tcConfigB.primaryAssembly with
+            | PrimaryAssembly.Mscorlib -> 
+                TargetFrameworkForScripts "netfx"
+            | PrimaryAssembly.System_Runtime ->
+                TargetFrameworkForScripts "netcore"
+            | PrimaryAssembly.NetStandard -> 
+                TargetFrameworkForScripts "netstandard"
+        tcConfigB.inferredTargetFrameworkForScripts <- Some { InferredFramework = targetFrameworkForScripts; WhereInferred = None }
+        
     let tcConfig = TcConfig.Create(tcConfigB, validate=false) 
-    
+
     let AddIfNotPresent(filename: string) =
         if not(allSources |> List.contains filename) then
             allSources <- filename :: allSources
     
     let AppendClosureInformation filename =
         if IsScript filename then 
+
             let closure = 
                 LoadClosure.ComputeClosureOfScriptFiles
                    (ctok, tcConfig, [filename, rangeStartup], CodeContext.Compilation, 
                     lexResourceManager, dependencyProvider)
 
-            // Record the references from the analysis of the script. The full resolutions are recorded as the corresponding #I paths used to resolve them
-            // are local to the scripts and not added to the tcConfigB (they are added to localized clones of the tcConfigB).
+            // Record the new references (non-framework) references from the analysis of the script. (The full resolutions are recorded
+            // as the corresponding #I paths used to resolve them are local to the scripts and not added to the tcConfigB - they are
+            // added to localized clones of the tcConfigB).
             let references =
                 closure.References
                 |> List.collect snd
                 |> List.filter (fun r -> not (Range.equals r.originalReference.Range range0) && not (Range.equals r.originalReference.Range rangeStartup))
 
             references |> List.iter (fun r -> tcConfigB.AddReferencedAssemblyByPath(r.originalReference.Range, r.resolvedPath))
+
+            // Also record the other declarations from the script.
             closure.NoWarns |> List.collect (fun (n, ms) -> ms|>List.map(fun m->m, n)) |> List.iter (fun (x,m) -> tcConfigB.TurnWarningOff(x, m))
             closure.SourceFiles |> List.map fst |> List.iter AddIfNotPresent
             closure.AllRootFileDiagnostics |> List.iter diagnosticSink
+
+            // If there was an explicit #targetfx in the script then push that as a requirement into the overall compilation and add all the framework references implied
+            // by the script too.
+            match closure.InferredTargetFramework.WhereInferred with
+            | Some m ->
+                tcConfigB.CheckExplicitFrameworkDirective(closure.InferredTargetFramework.InferredFramework, m)
+                tcConfigB.primaryAssembly <- closure.InferredTargetFramework.InferredFramework.PrimaryAssembly
+                if tcConfigB.framework then
+                    let references = closure.References |> List.collect snd
+                    references |> List.iter (fun r -> tcConfigB.AddReferencedAssemblyByPath(r.originalReference.Range, r.resolvedPath))
+            | None -> ()
             
         else AddIfNotPresent filename
          
@@ -1725,7 +1769,8 @@ type Args<'T> = Args  of 'T
 
 let main0(ctok, argv, legacyReferenceResolver, bannerAlreadyPrinted, 
           reduceMemoryUsage: ReduceMemoryFlag, defaultCopyFSharpCore: CopyFSharpCoreFlag, 
-          exiter: Exiter, errorLoggerProvider : ErrorLoggerProvider, disposables : DisposablesTracker) = 
+          exiter: Exiter, errorLoggerProvider : ErrorLoggerProvider,
+          disposables : DisposablesTracker) = 
 
     // See Bug 735819 
     let lcidFromCodePage =
@@ -1752,12 +1797,19 @@ let main0(ctok, argv, legacyReferenceResolver, bannerAlreadyPrinted,
 
     let tryGetMetadataSnapshot = (fun _ -> None)
 
+    let fxResolver = FxResolver(reduceMemoryUsage, tryGetMetadataSnapshot, None)
+
     let tcConfigB = 
-       TcConfigBuilder.CreateNew(legacyReferenceResolver, DefaultFSharpBinariesDir, 
-          reduceMemoryUsage=reduceMemoryUsage, implicitIncludeDir=directoryBuildingFrom, 
-          isInteractive=false, isInvalidationSupported=false, 
-          defaultCopyFSharpCore=defaultCopyFSharpCore, 
-          tryGetMetadataSnapshot=tryGetMetadataSnapshot)
+        TcConfigBuilder.CreateNew(legacyReferenceResolver,
+            fxResolver,
+            DefaultFSharpBinariesDir, 
+            reduceMemoryUsage=reduceMemoryUsage,
+            implicitIncludeDir=directoryBuildingFrom, 
+            isInteractive=false, isInvalidationSupported=false, 
+            defaultCopyFSharpCore=defaultCopyFSharpCore, 
+            tryGetMetadataSnapshot=tryGetMetadataSnapshot,
+            // note - this may later be updated via script closure
+            inferredTargetFrameworkForScripts=None)
 
     // Preset: --optimize+ -g --tailcalls+ (see 4505)
     SetOptimizeSwitch tcConfigB OptionSwitch.On
@@ -1789,6 +1841,9 @@ let main0(ctok, argv, legacyReferenceResolver, bannerAlreadyPrinted,
             delayForFlagsLogger.ForwardDelayedDiagnostics tcConfigB
             exiter.Exit 1 
     
+    let useDotNetFramework = (tcConfigB.primaryAssembly = PrimaryAssembly.Mscorlib)
+    tcConfigB.fxResolver <- FxResolver(tcConfigB.reduceMemoryUsage, tcConfigB.tryGetMetadataSnapshot, Some useDotNetFramework)
+
     tcConfigB.conditionalCompilationDefines <- "COMPILED" :: tcConfigB.conditionalCompilationDefines 
     displayBannerIfNeeded tcConfigB
 
@@ -1952,12 +2007,17 @@ let main0OfAst (ctok, legacyReferenceResolver, reduceMemoryUsage, assemblyName, 
 
     let tryGetMetadataSnapshot = (fun _ -> None)
 
+    let fxResolver = FxResolver(reduceMemoryUsage, tryGetMetadataSnapshot, None)
+
     let tcConfigB = 
-        TcConfigBuilder.CreateNew(legacyReferenceResolver, DefaultFSharpBinariesDir, 
+        TcConfigBuilder.CreateNew(legacyReferenceResolver,
+            fxResolver,
+            DefaultFSharpBinariesDir, 
             reduceMemoryUsage=reduceMemoryUsage, implicitIncludeDir=Directory.GetCurrentDirectory(), 
             isInteractive=false, isInvalidationSupported=false, 
             defaultCopyFSharpCore=CopyFSharpCoreFlag.No, 
-            tryGetMetadataSnapshot=tryGetMetadataSnapshot)
+            tryGetMetadataSnapshot=tryGetMetadataSnapshot,
+            inferredTargetFrameworkForScripts=None)
 
     let primaryAssembly =
         // temporary workaround until https://github.com/dotnet/fsharp/pull/8043 is merged:
@@ -2209,10 +2269,17 @@ let main4 dynamicAssemblyCreator (Args (ctok, tcConfig,  tcImports: TcImports, t
 // Entry points to compilation
 //-----------------------------------------------------------------------------
 
-/// Entry point typecheckAndCompile
-let typecheckAndCompile 
-       (ctok, argv, legacyReferenceResolver, bannerAlreadyPrinted, reduceMemoryUsage, 
-        defaultCopyFSharpCore, exiter: Exiter, loggerProvider, tcImportsCapture, dynamicAssemblyCreator) =
+let mainCompile 
+        (ctok,
+         argv,
+         legacyReferenceResolver,
+         bannerAlreadyPrinted,
+         reduceMemoryUsage, 
+         defaultCopyFSharpCore,
+         exiter: Exiter,
+         loggerProvider,
+         tcImportsCapture,
+         dynamicAssemblyCreator) =
 
     use d = new DisposablesTracker()
     let savedOut = System.Console.Out
@@ -2243,12 +2310,4 @@ let compileOfAst
     |> main2b (tcImportsCapture, dynamicAssemblyCreator)
     |> main3
     |> main4 dynamicAssemblyCreator
-
-let mainCompile 
-        (ctok, argv, legacyReferenceResolver, bannerAlreadyPrinted, reduceMemoryUsage, 
-         defaultCopyFSharpCore, exiter, loggerProvider, tcImportsCapture, dynamicAssemblyCreator) = 
-
-    typecheckAndCompile
-       (ctok, argv, legacyReferenceResolver, bannerAlreadyPrinted, reduceMemoryUsage, 
-        defaultCopyFSharpCore, exiter, loggerProvider, tcImportsCapture, dynamicAssemblyCreator)
 

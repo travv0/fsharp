@@ -143,6 +143,7 @@ let projectOptions =
       ProjectId = None
       SourceFiles = [| fileName1; fileName2 |]
       OriginalLoadReferences = []
+      InferredTargetFrameworkForScripts = None
       ExtraProjectInfo=None
       Stamp = None
       OtherOptions = allFlags 
