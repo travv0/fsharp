@@ -30,9 +30,9 @@ type internal FSharpNavigationBarItemService
     static let emptyResult: IList<FSharpNavigationBarItem> = upcast [||]
 
     interface IFSharpNavigationBarItemService with
-        member __.GetItemsAsync(document, cancellationToken) : Task<IList<FSharpNavigationBarItem>> = 
+        member _.GetItemsAsync(document, cancellationToken) : Task<IList<FSharpNavigationBarItem>> = 
             asyncMaybe {
-                let! parsingOptions, _options = projectInfoManager.TryGetOptionsForEditingDocumentOrProject(document, cancellationToken)
+                let! parsingOptions, _options = projectInfoManager.TryGetOptionsForEditingDocumentOrProject(document, cancellationToken, userOpName)
                 let! sourceText = document.GetTextAsync(cancellationToken)
                 let! parsedInput = checkerProvider.Checker.ParseDocument(document, parsingOptions, sourceText=sourceText, userOpName=userOpName)
                 let navItems = FSharpNavigation.getNavigation parsedInput

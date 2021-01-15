@@ -239,24 +239,24 @@ function Make-BootstrapBuild() {
     # prepare FsLex and Fsyacc and AssemblyCheck
     $dotnetPath = InitializeDotNetCli
     $dotnetExe = Join-Path $dotnetPath "dotnet.exe"
-    $buildToolsProject = "$RepoRoot\src\buildtools\buildtools.proj"
+    $buildToolsProject = "`"$RepoRoot\src\buildtools\buildtools.proj`""
 
     $argNoRestore = if ($norestore) { " --no-restore" } else { "" }
     $argNoIncremental = if ($rebuild) { " --no-incremental" } else { "" }
 
-    $args = "build $buildToolsProject -c $bootstrapConfiguration -v $verbosity -f netcoreapp3.0" + $argNoRestore + $argNoIncremental
+    $args = "build $buildToolsProject -c $bootstrapConfiguration -v $verbosity -f netcoreapp3.1" + $argNoRestore + $argNoIncremental
     if ($binaryLog) {
         $logFilePath = Join-Path $LogDir "toolsBootstrapLog.binlog"
         $args += " /bl:$logFilePath"
     }
     Exec-Console $dotnetExe $args
 
-    Copy-Item "$ArtifactsDir\bin\fslex\$bootstrapConfiguration\netcoreapp3.0" -Destination "$dir\fslex" -Force -Recurse
-    Copy-Item "$ArtifactsDir\bin\fsyacc\$bootstrapConfiguration\netcoreapp3.0" -Destination "$dir\fsyacc" -Force  -Recurse
-    Copy-Item "$ArtifactsDir\bin\AssemblyCheck\$bootstrapConfiguration\netcoreapp3.0" -Destination "$dir\AssemblyCheck" -Force  -Recurse
+    Copy-Item "$ArtifactsDir\bin\fslex\$bootstrapConfiguration\netcoreapp3.1" -Destination "$dir\fslex" -Force -Recurse
+    Copy-Item "$ArtifactsDir\bin\fsyacc\$bootstrapConfiguration\netcoreapp3.1" -Destination "$dir\fsyacc" -Force  -Recurse
+    Copy-Item "$ArtifactsDir\bin\AssemblyCheck\$bootstrapConfiguration\netcoreapp3.1" -Destination "$dir\AssemblyCheck" -Force  -Recurse
 
     # prepare compiler
-    $protoProject = "$RepoRoot\proto.proj"
+    $protoProject = "`"$RepoRoot\proto.proj`""
     $args = "build $protoProject -c $bootstrapConfiguration -v $verbosity -f $bootstrapTfm" + $argNoRestore + $argNoIncremental
     if ($binaryLog) {
         $logFilePath = Join-Path $LogDir "protoBootstrapLog.binlog"

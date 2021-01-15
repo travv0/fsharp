@@ -7,11 +7,13 @@ open FSharp.Compiler.AbstractIL.Internal
 open FSharp.Compiler.AbstractIL.Internal.Library
 open FSharp.Compiler.AbstractIL.Diagnostics
 open FSharp.Compiler.CompilerGlobalState
-open FSharp.Compiler.ErrorLogger
 open FSharp.Compiler.Detuple.GlobalUsageAnalysis
-open FSharp.Compiler.Layout
+open FSharp.Compiler.ErrorLogger
 open FSharp.Compiler.Lib
 open FSharp.Compiler.SyntaxTree
+open FSharp.Compiler.Text
+open FSharp.Compiler.TextLayout.Layout
+open FSharp.Compiler.TextLayout.LayoutRender
 open FSharp.Compiler.TypedTree
 open FSharp.Compiler.TypedTreeBasics
 open FSharp.Compiler.TypedTreeOps
@@ -335,7 +337,7 @@ type ReqdItemsForDefn =
     { 
         reqdTypars: Zset<Typar>
         reqdItems: Zset<ReqdItem>
-        m: Range.range
+        m: range
     }
 
     member env.ReqdSubEnvs = [ for x in env.reqdItems do match x with | ReqdSubEnv f -> yield f | ReqdVal _ -> () ]
@@ -674,7 +676,7 @@ type PackedReqdItems =
 // step3: FlatEnvPacks
 //-------------------------------------------------------------------------
 
-exception AbortTLR of Range.range
+exception AbortTLR of range
 
 /// A naive packing of environments.
 /// Chooses to pass all env values as explicit args (no tupling).
@@ -897,7 +899,7 @@ module Pass4_RewriteAssembly =
     ///
     /// Top-level status ends when stepping inside a lambda, where a lambda is:
     ///   Expr.TyLambda, Expr.Lambda, Expr.Obj (and tmethods).
-    ///   [... also, try_catch handlers, and switch targets...]
+    ///   [... also, try_with handlers, and switch targets...]
     ///
     /// Top* repr bindings already at top-level do not need moving...
     ///   [and should not be, since they may lift over unmoved defns on which they depend].
@@ -1168,12 +1170,20 @@ module Pass4_RewriteAssembly =
         | Expr.Const _ -> 
             expr,z 
 
-        | Expr.Quote (a,{contents=Some(typeDefs,argTypes,argExprs,data)},isFromQueryExpression,m,ty) -> 
-            let argExprs,z = List.mapFold (TransExpr penv) z argExprs
-            Expr.Quote (a,{contents=Some(typeDefs,argTypes,argExprs,data)},isFromQueryExpression,m,ty),z
+        | Expr.Quote (a,dataCell,isFromQueryExpression,m,ty) -> 
+            let doData (typeDefs,argTypes,argExprs,data) z = 
+                let argExprs,z = List.mapFold (TransExpr penv) z argExprs
+                (typeDefs,argTypes,argExprs,data), z
 
-        | Expr.Quote (a,{contents=None},isFromQueryExpression,m,ty) -> 
-            Expr.Quote (a,{contents=None},isFromQueryExpression,m,ty),z
+            let data, z =
+                match !dataCell with 
+                | Some (data1, data2) ->
+                   let data1, z = doData data1 z
+                   let data2, z = doData data2 z
+                   Some (data1, data2), z
+                | None -> None, z
+
+            Expr.Quote (a,ref data,isFromQueryExpression,m,ty),z
 
         | Expr.Op (c,tyargs,args,m) -> 
             let args,z = List.mapFold (TransExpr penv) z args
@@ -1186,6 +1196,9 @@ module Pass4_RewriteAssembly =
 
         | Expr.TyChoose (_,_,m) -> 
             error(Error(FSComp.SR.tlrUnexpectedTExpr(),m))
+
+        | Expr.WitnessArg (_witnessInfo, _m) ->
+            expr, z
 
     /// Walk over linear structured terms in tail-recursive loop, using a continuation 
     /// to represent the rebuild-the-term stack 

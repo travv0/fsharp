@@ -8,10 +8,10 @@ open FSharp.Compiler
 open FSharp.Compiler.AbstractIL
 open FSharp.Compiler.AbstractIL.Internal.Library
 open FSharp.Compiler.ErrorLogger
-open FSharp.Compiler.Features
-open FSharp.Compiler.PrettyNaming
+open FSharp.Compiler.SourceCodeServices.PrettyNaming
 open FSharp.Compiler.SyntaxTree
-open FSharp.Compiler.Range
+open FSharp.Compiler.Text
+open FSharp.Compiler.Text.Range
 open FSharp.Compiler.XmlDoc
 
 //----------------------------------------------------------------------
@@ -22,8 +22,8 @@ type SynArgNameGenerator() =
     let mutable count = 0
     let generatedArgNamePrefix = "_arg"
 
-    member __.New() : string = count <- count + 1; generatedArgNamePrefix + string count
-    member __.Reset() = count <- 0
+    member _.New() : string = count <- count + 1; generatedArgNamePrefix + string count
+    member _.Reset() = count <- 0
 
 //----------------------------------------------------------------------
 // AST and parsing utilities.
@@ -102,7 +102,7 @@ let rec IsControlFlowExpression e =
 
 let mkAnonField (ty: SynType) = Field([], false, None, ty, false, PreXmlDoc.Empty, None, ty.Range)
 
-let mkNamedField (ident, ty: SynType) = Field([], false, Some ident, ty, false, PreXmlDoc.Empty, None, ty.Range)
+let mkNamedField (ident, ty: SynType, m) = Field([], false, Some ident, ty, false, PreXmlDoc.Empty, None, m)
 
 let mkSynPatVar vis (id: Ident) = SynPat.Named (SynPat.Wild id.idRange, id, false, vis, id.idRange)
 
@@ -175,6 +175,10 @@ let rec SimplePatOfPat (synArgNameGenerator: SynArgNameGenerator) p =
                 let altNameRefCell = Some (ref (Undecided (mkSynId m (synArgNameGenerator.New()))))
                 let item = mkSynIdGetWithAlt m id altNameRefCell
                 false, altNameRefCell, id, item
+            | SynPat.Named(_, ident, _, _, _) ->
+                // named pats should be referred to as their name in docs, tooltips, etc.
+                let item = mkSynIdGet m ident.idText
+                false, None, ident, item
             | _ ->
                 let nm = synArgNameGenerator.New()
                 let id = mkSynId m nm
@@ -200,7 +204,7 @@ let rec SimplePatsOfPat synArgNameGenerator p =
 
     | SynPat.Tuple (false, ps, m)
 
-    | SynPat.Paren(SynPat.Tuple (false, ps, m), _) ->
+    | SynPat.Paren(SynPat.Tuple (false, ps, _), m) ->
         let ps2, laterF =
           List.foldBack
             (fun (p', rhsf) (ps', rhsf') ->
@@ -224,7 +228,7 @@ let rec SimplePatsOfPat synArgNameGenerator p =
 
 let PushPatternToExpr synArgNameGenerator isMember pat (rhs: SynExpr) =
     let nowPats, laterF = SimplePatsOfPat synArgNameGenerator pat
-    nowPats, SynExpr.Lambda (isMember, false, nowPats, appFunOpt laterF rhs, rhs.Range)
+    nowPats, SynExpr.Lambda (isMember, false, nowPats, appFunOpt laterF rhs, None, rhs.Range)
 
 let private isSimplePattern pat =
     let _nowPats, laterF = SimplePatsOfPat (SynArgNameGenerator()) pat
@@ -253,8 +257,8 @@ let PushCurriedPatternsToExpr synArgNameGenerator wholem isMember pats rhs =
         match spatsl with
         | [] -> rhs
         | h :: t ->
-            let expr = List.foldBack (fun spats e -> SynExpr.Lambda (isMember, true, spats, e, wholem)) t rhs
-            let expr = SynExpr.Lambda (isMember, false, h, expr, wholem)
+            let expr = List.foldBack (fun spats e -> SynExpr.Lambda (isMember, true, spats, e, None, wholem)) t rhs
+            let expr = SynExpr.Lambda (isMember, false, h, expr, Some (pats, rhs), wholem)
             expr
     spatsl, expr
 
@@ -330,7 +334,7 @@ let mkSynUnit m = SynExpr.Const (SynConst.Unit, m)
 let mkSynUnitPat m = SynPat.Const(SynConst.Unit, m)
 
 let mkSynDelay m e =
-    SynExpr.Lambda (false, false, SynSimplePats.SimplePats ([mkSynCompGenSimplePatVar (mkSynId m "unitVar")], m), e, m)
+    SynExpr.Lambda (false, false, SynSimplePats.SimplePats ([mkSynCompGenSimplePatVar (mkSynId m "unitVar")], m), e, None, m)
 
 let mkSynAssign (l: SynExpr) (r: SynExpr) =
     let m = unionRanges l.Range r.Range
@@ -396,6 +400,14 @@ let (|Attributes|) synAttributes =
 
 let rangeOfNonNilAttrs (attrs: SynAttributes) =
     (attrs.Head.Range, attrs.Tail) ||> unionRangeWithListBy (fun a -> a.Range)
+
+let rec stripParenTypes synType =
+    match synType with
+    | SynType.Paren (innerType, _) -> stripParenTypes innerType
+    | _ -> synType
+
+let (|StripParenTypes|) synType =
+    stripParenTypes synType
 
 /// Operations related to the syntactic analysis of arguments of value, function and member definitions and signatures.
 module SynInfo =
@@ -490,7 +502,7 @@ module SynInfo =
     let InferLambdaArgs origRhsExpr =
         let rec loop e =
             match e with
-            | SynExpr.Lambda (false, _, spats, rest, _) ->
+            | SynExpr.Lambda (false, _, spats, rest, _, _) ->
                 InferSynArgInfoFromSimplePats spats :: loop rest
             | _ -> []
         loop origRhsExpr
@@ -684,7 +696,7 @@ let rec synExprContainsError inpExpr =
           | SynExpr.MatchLambda (_, _, cl, _, _) ->
               walkMatchClauses cl
 
-          | SynExpr.Lambda (_, _, _, e, _) ->
+          | SynExpr.Lambda (_, _, _, e, _, _) ->
               walkExpr e
 
           | SynExpr.Match (_, e, cl, _) ->
@@ -722,5 +734,11 @@ let rec synExprContainsError inpExpr =
 
           | SynExpr.LetOrUseBang  (rhs=e1;body=e2;andBangs=es) ->
               walkExpr e1 || walkExprs [ for (_,_,_,_,e,_) in es do yield e ] || walkExpr e2
+
+          | SynExpr.InterpolatedString (parts, _m) ->
+              walkExprs 
+                  (parts |> List.choose (function 
+                      | SynInterpolatedStringPart.String _ -> None
+                      | SynInterpolatedStringPart.FillExpr (x, _) -> Some x))
 
     walkExpr inpExpr

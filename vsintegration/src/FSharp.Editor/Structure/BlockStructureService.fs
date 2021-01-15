@@ -12,7 +12,6 @@ open Microsoft.CodeAnalysis.Text
 open Microsoft.CodeAnalysis.Structure
 open Microsoft.CodeAnalysis.ExternalAccess.FSharp.Structure
 
-open FSharp.Compiler
 open FSharp.Compiler.SourceCodeServices
 open FSharp.Compiler.SourceCodeServices.Structure
 open FSharp.Compiler.SyntaxTree
@@ -150,9 +149,9 @@ type internal FSharpBlockStructureService [<ImportingConstructor>] (checkerProvi
 
     interface IFSharpBlockStructureService with
  
-        member __.GetBlockStructureAsync(document, cancellationToken) : Task<FSharpBlockStructure> =
+        member _.GetBlockStructureAsync(document, cancellationToken) : Task<FSharpBlockStructure> =
             asyncMaybe {
-                let! parsingOptions, _options = projectInfoManager.TryGetOptionsForEditingDocumentOrProject(document, cancellationToken)
+                let! parsingOptions, _options = projectInfoManager.TryGetOptionsForEditingDocumentOrProject(document, cancellationToken, userOpName)
                 let! sourceText = document.GetTextAsync(cancellationToken)
                 let! parsedInput = checkerProvider.Checker.ParseDocument(document, parsingOptions, sourceText, userOpName)
                 return createBlockSpans document.FSharpOptions.Advanced.IsBlockStructureEnabled sourceText parsedInput |> Seq.toImmutableArray

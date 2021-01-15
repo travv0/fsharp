@@ -2,22 +2,27 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net472;netcoreapp3.0</TargetFrameworks>
-    <TargetFrameworks Condition="'$(OS)' == 'Unix'">netcoreapp3.0</TargetFrameworks>
+    <TargetFrameworks>net472;netcoreapp3.1</TargetFrameworks>
+    <TargetFrameworks Condition="'$(OS)' == 'Unix'">netcoreapp3.1</TargetFrameworks>
     <OutputType>Library</OutputType>
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
-    <UnitTestType>nunit</UnitTestType>
+    <UnitTestType>xunit</UnitTestType>
     <ExcludeFromSourceBuild>true</ExcludeFromSourceBuild>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="ConsoleHelpers.fs" />
+    <Compile Include="$(FSharpSourcesRoot)\fsharp\utils\RidHelpers.fs" />
     <Compile Include="TestHelpers.fs" />
     <Compile Include="DependencyManagerInteractiveTests.fs" />
     <Compile Include="DependencyManagerLineParserTests.fs" />
     <Compile Include="FSharpScriptTests.fs" />
-    <None Include="housing.csv"  CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="CompletionTests.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="housing.csv"  CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

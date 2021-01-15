@@ -6,6 +6,7 @@ module internal FSharp.Compiler.InfoReader
 
 open System
 open System.Collections.Generic
+open System.Collections.Concurrent
 
 open FSharp.Compiler 
 open FSharp.Compiler.AbstractIL.IL
@@ -13,13 +14,14 @@ open FSharp.Compiler.AbstractIL.Internal.Library
 open FSharp.Compiler.AccessibilityLogic
 open FSharp.Compiler.AttributeChecking
 open FSharp.Compiler.ErrorLogger
+open FSharp.Compiler.Features
 open FSharp.Compiler.Infos
-open FSharp.Compiler.Range
 open FSharp.Compiler.SyntaxTree
+open FSharp.Compiler.TcGlobals
+open FSharp.Compiler.Text
+open FSharp.Compiler.Text.Range
 open FSharp.Compiler.TypedTree
 open FSharp.Compiler.TypedTreeOps
-open FSharp.Compiler.TcGlobals
-open FSharp.Compiler.Features
 open FSharp.Compiler.TypeRelations
 
 /// Use the given function to select some of the member values from the members of an F# type
@@ -107,7 +109,7 @@ type PropertyCollector(g, amap, m, ty, optFilter, ad) =
                 PropInfosEquivByNameAndPartialSig EraseNone g amap m pinfo1 pinfo2 &&
                 pinfo1.IsDefiniteFSharpOverride = pinfo2.IsDefiniteFSharpOverride )
 
-    let props = new Dictionary<PropInfo, PropInfo>(hashIdentity)
+    let props = new ConcurrentDictionary<PropInfo, PropInfo>(hashIdentity)
 
     let add pinfo =
         match props.TryGetValue pinfo, pinfo with
@@ -571,9 +573,15 @@ let private tryLanguageFeatureRuntimeErrorAux (infoReader: InfoReader) langFeatu
     if not (infoReader.IsLanguageFeatureRuntimeSupported langFeature) then
         let featureStr = infoReader.g.langVersion.GetFeatureString langFeature
         error (Error(FSComp.SR.chkFeatureNotRuntimeSupported featureStr, m))
+        false
+    else
+        true
 
-let tryLanguageFeatureRuntimeError infoReader langFeature m =
-    tryLanguageFeatureRuntimeErrorAux infoReader langFeature m error
+let checkLanguageFeatureRuntimeError infoReader langFeature m =
+    tryLanguageFeatureRuntimeErrorAux infoReader langFeature m error |> ignore
+
+let checkLanguageFeatureRuntimeErrorRecover infoReader langFeature m =
+    tryLanguageFeatureRuntimeErrorAux infoReader langFeature m errorR |> ignore
 
 let tryLanguageFeatureRuntimeErrorRecover infoReader langFeature m =
     tryLanguageFeatureRuntimeErrorAux infoReader langFeature m errorR
@@ -617,8 +625,6 @@ let rec GetIntrinsicConstructorInfosOfTypeAux (infoReader: InfoReader) m origTy 
 
 let GetIntrinsicConstructorInfosOfType infoReader m ty = 
     GetIntrinsicConstructorInfosOfTypeAux infoReader m ty ty
-
-
 
 //-------------------------------------------------------------------------
 // Collecting methods and properties taking into account hiding rules in the hierarchy
@@ -922,5 +928,3 @@ let PropTypOfEventInfo (infoReader: InfoReader) m ad (einfo: EventInfo) =
     let delTy = einfo.GetDelegateType(amap, m)
     let argsTy = ArgsTypOfEventInfo infoReader m ad einfo 
     mkIEventType g delTy argsTy
-
-

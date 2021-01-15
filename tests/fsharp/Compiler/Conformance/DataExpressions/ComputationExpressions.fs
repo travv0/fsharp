@@ -3,6 +3,7 @@
 namespace FSharp.Compiler.UnitTests
 
 open NUnit.Framework
+open FSharp.Test.Utilities
 open FSharp.Compiler.SourceCodeServices
 
 [<TestFixture>]
@@ -280,7 +281,7 @@ let ceResult : Trace<int> =
         return if y then x else -1
     }
             """
-            [| FSharpErrorSeverity.Error, 3344, (6, 9, 8, 35), "This feature is not supported in this version of F#. You may need to add /langversion:preview to use this feature." |]
+            [| FSharpDiagnosticSeverity.Error, 3344, (6, 9, 8, 35), "This feature is not supported in this version of F#. You may need to add /langversion:preview to use this feature." |]
 
     [<Test>]
     let ``AndBang TraceMultiBindingMonoid`` () =
@@ -581,7 +582,7 @@ let _ =
         return x + y
     }
     """
-            [|(FSharpErrorSeverity.Error, 3343, (6, 9, 6, 25), "The 'let! ... and! ...' construct may only be used if the computation expression builder defines either a 'Bind2' method or appropriate 'MergeSource' and 'Bind' methods")|]
+            [|(FSharpDiagnosticSeverity.Error, 3343, (6, 9, 6, 25), "The 'let! ... and! ...' construct may only be used if the computation expression builder defines either a 'Bind2' method or appropriate 'MergeSource' and 'Bind' methods")|]
 
     [<Test>]
     let ``AndBang Negative TraceApplicative missing Bind and BindReturn`` () =
@@ -595,7 +596,7 @@ let _ =
         return x + y
     }
     """
-            [|(FSharpErrorSeverity.Error, 708, (6, 9, 6, 25), "This control construct may only be used if the computation expression builder defines a 'Bind' method")|]
+            [|(FSharpDiagnosticSeverity.Error, 708, (6, 9, 6, 25), "This control construct may only be used if the computation expression builder defines a 'Bind' method")|]
 
 
     [<Test>]
@@ -611,7 +612,7 @@ let _ =
         return x + y
     }
     """
-            [| FSharpErrorSeverity.Error, 708, (7, 9, 7, 25), "This control construct may only be used if the computation expression builder defines a 'Bind' method" |]
+            [| FSharpDiagnosticSeverity.Error, 708, (7, 9, 7, 25), "This control construct may only be used if the computation expression builder defines a 'Bind' method" |]
 
     [<Test>]
     let ``AndBang TraceApplicative with do-bang`` () =
@@ -626,9 +627,9 @@ let _ =
         return x + y
     }
     """
-            [|(FSharpErrorSeverity.Error, 10, (7, 9, 7, 13),"Unexpected keyword 'and!' in expression. Expected '}' or other token.");
-              (FSharpErrorSeverity.Error, 604, (5, 12, 5, 13), "Unmatched '{'");
-              (FSharpErrorSeverity.Error, 10, (8, 9, 8, 13), "Unexpected keyword 'and!' in implementation file")|]
+            [|(FSharpDiagnosticSeverity.Error, 10, (7, 9, 7, 13),"Unexpected keyword 'and!' in expression. Expected '}' or other token.");
+              (FSharpDiagnosticSeverity.Error, 604, (5, 12, 5, 13), "Unmatched '{'");
+              (FSharpDiagnosticSeverity.Error, 10, (8, 9, 8, 13), "Unexpected keyword 'and!' in implementation file")|]
 
     [<Test>]
     let ``AndBang Negative TraceApplicative let betweeen let! and and!`` () =
@@ -643,7 +644,7 @@ let _ =
         return x + y
     }
     """
-            [| (FSharpErrorSeverity.Error, 10, (8, 9, 8, 13), "Unexpected keyword 'and!' in expression") |]
+            [| (FSharpDiagnosticSeverity.Error, 10, (8, 9, 8, 13), "Unexpected keyword 'and!' in expression") |]
 
 
     [<Test>]
@@ -657,7 +658,7 @@ let _ =
         and! y = Trace 2
     }
     """
-            [|(FSharpErrorSeverity.Error, 10, (8, 5, 8, 6), "Unexpected symbol '}' in expression")|]
+            [|(FSharpDiagnosticSeverity.Error, 10, (8, 5, 8, 6), "Unexpected symbol '}' in expression")|]
 
     [<Test>]
     let ``AndBang TraceApplicative conditional return`` () =
@@ -709,3 +710,129 @@ let ceResult =
 check "grwerjkrwejgk42" ceResult.Value 2
     """
 
+    let overloadLib includeInternalExtensions includeExternalExtensions = 
+        """
+open System
+
+type Content = ArraySegment<byte> list
+
+type ContentBuilder() =
+    member this.Run(c: Content) =
+        let crlf = "\r\n"B
+        [|for part in List.rev c do
+            yield! part.Array.[part.Offset..(part.Count+part.Offset-1)]
+            yield! crlf |]
+
+    member this.Yield(_) = []
+
+    [<CustomOperation("body")>]
+    member this.Body(c: Content, segment: ArraySegment<byte>) =
+        segment::c
+        """ + (if includeInternalExtensions then """
+
+type ContentBuilder with
+    // unattributed internal type extension with same arity
+    member this.Body(c: Content, bytes: byte[]) =
+        ArraySegment<byte>(bytes, 0, bytes.Length)::c
+
+    // internal type extension with different arity
+    [<CustomOperation("body")>]
+    member this.Body(c: Content, bytes: byte[], offset, count) =
+        ArraySegment<byte>(bytes, offset, count)::c
+        """ else """
+
+    // unattributed type member with same arity
+    member this.Body(c: Content, bytes: byte[]) =
+        ArraySegment<byte>(bytes, 0, bytes.Length)::c
+
+    // type member with different arity
+    [<CustomOperation("body")>]
+    member this.Body(c: Content, bytes: byte[], offset, count) =
+        ArraySegment<byte>(bytes, offset, count)::c
+        """) + (if includeExternalExtensions then """
+
+module Extensions =
+    type ContentBuilder with
+        // unattributed external type extension with same arity
+        member this.Body(c: Content, content: System.IO.Stream) =
+            let mem = new System.IO.MemoryStream()
+            content.CopyTo(mem)
+            let bytes = mem.ToArray()
+            ArraySegment<byte>(bytes, 0, bytes.Length)::c
+
+        // external type extensions as ParamArray
+        [<CustomOperation("body")>]
+        member this.Body(c: Content, [<ParamArray>] contents: string[]) =
+            List.rev [for c in contents -> let b = Text.Encoding.ASCII.GetBytes c in ArraySegment<_>(b,0,b.Length)] @ c
+open Extensions
+        """ else """
+
+    // unattributed type member with same arity
+    member this.Body(c: Content, content: System.IO.Stream) =
+        let mem = new System.IO.MemoryStream()
+        content.CopyTo(mem)
+        let bytes = mem.ToArray()
+        ArraySegment<byte>(bytes, 0, bytes.Length)::c
+
+    // type members
+    [<CustomOperation("body")>]
+    member this.Body(c: Content, [<ParamArray>] contents: string[]) =
+        List.rev [for c in contents -> let b = Text.Encoding.ASCII.GetBytes c in ArraySegment<_>(b,0,b.Length)] @ c
+        """) + """
+
+let check msg actual expected = if actual <> expected then failwithf "FAILED %s, expected %A, got %A" msg expected actual
+        """
+
+    let OverloadLibTest inclInternalExt inclExternalExt source =
+        CompilerAssert.CompileExeAndRunWithOptions [| "/langversion:preview" |] (overloadLib inclInternalExt inclExternalExt + source)
+
+    [<Test>]
+    let ``OverloadLib accepts overloaded methods`` () =
+        OverloadLibTest false false """
+let mem = new System.IO.MemoryStream("Stream"B)
+let content = ContentBuilder()
+let ceResult =
+    content {
+        body "Name"
+        body (ArraySegment<_>("Email"B, 0, 5))
+        body "Password"B 2 4
+        body "BYTES"B
+        body mem
+        body "Description" "of" "content"
+    }
+check "TmFtZVxyXG5FbWF1" ceResult "Name\r\nEmail\r\nsswo\r\nBYTES\r\nStream\r\nDescription\r\nof\r\ncontent\r\n"B
+    """
+
+    [<Test>]
+    let ``OverloadLib accepts overloaded internal extension methods`` () =
+        OverloadLibTest true false """
+let mem = new System.IO.MemoryStream("Stream"B)
+let content = ContentBuilder()
+let ceResult =
+    content {
+        body "Name"
+        body (ArraySegment<_>("Email"B, 0, 5))
+        body "Password"B 2 4
+        body "BYTES"B
+        body mem
+        body "Description" "of" "content"
+    }
+check "TmFtZVxyXG5FbWF2" ceResult "Name\r\nEmail\r\nsswo\r\nBYTES\r\nStream\r\nDescription\r\nof\r\ncontent\r\n"B
+    """
+
+    [<Test>]
+    let ``OverloadLib accepts overloaded internal and external extensions`` () =
+        OverloadLibTest true true """
+let mem = new System.IO.MemoryStream("Stream"B)
+let content = ContentBuilder()
+let ceResult =
+    content {
+        body "Name"
+        body (ArraySegment<_>("Email"B, 0, 5))
+        body "Password"B 2 4
+        body "BYTES"B
+        body mem
+        body "Description" "of" "content"
+    }
+check "TmFtZVxyXG5FbWF3" ceResult "Name\r\nEmail\r\nsswo\r\nBYTES\r\nStream\r\nDescription\r\nof\r\ncontent\r\n"B
+    """

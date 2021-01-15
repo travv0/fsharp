@@ -3,56 +3,31 @@
 namespace Microsoft.DotNet.DependencyManager
 
 open System
-open System.Collections.Generic
+open System.Collections.Concurrent
 open System.IO
 open System.Reflection
 open System.Runtime.InteropServices
+open Internal.Utilities
 open Internal.Utilities.FSharpEnvironment
 
 /// Signature for Native library resolution probe callback
 /// host implements this, it's job is to return a list of package roots to probe.
 type NativeResolutionProbe = delegate of Unit -> seq<string>
 
-module internal RidHelpers =
-
-    // Computer valid dotnet-rids for this environment:
-    //      https://docs.microsoft.com/en-us/dotnet/core/rid-catalog
-    //
-    // Where rid is: win, win-x64, win-x86, osx-x64, linux-x64 etc ...
-    let probingRids, baseRid, platformRid =
-        let processArchitecture = RuntimeInformation.ProcessArchitecture
-        let baseRid =
-            if RuntimeInformation.IsOSPlatform(OSPlatform.Windows) then "win"
-            elif RuntimeInformation.IsOSPlatform(OSPlatform.OSX) then "osx"
-            else "linux"
-        let platformRid =
-            match processArchitecture with
-            | Architecture.X64 ->  baseRid + "-x64"
-            | Architecture.X86 -> baseRid + "-x86"
-            | Architecture.Arm64 -> baseRid + "-arm64"
-            | _ -> baseRid + "-arm"
-        [| "any"; baseRid; platformRid |], baseRid, platformRid
-
-open RidHelpers
-
-#if NETSTANDARD
-open System.Runtime.Loader
-
-// Cut down AssemblyLoadContext, for loading native libraries
-type NativeAssemblyLoadContext () =
-    inherit AssemblyLoadContext()
-
-    member this.LoadNativeLibrary(path: string): IntPtr =
-        base.LoadUnmanagedDllFromPath(path)
-
-    override _.Load(_path: AssemblyName): Assembly =
-        raise (NotImplementedException())
-
-    static member NativeLoadContext = new NativeAssemblyLoadContext()
-
-
 /// Type that encapsulates Native library probing for managed packages
-type NativeDllResolveHandlerCoreClr (_nativeProbingRoots: NativeResolutionProbe) =
+type NativeDllResolveHandlerCoreClr (nativeProbingRoots: NativeResolutionProbe) =
+
+    let nativeLibraryTryLoad =
+        let nativeLibraryType: Type = Type.GetType("System.Runtime.InteropServices.NativeLibrary, System.Runtime.InteropServices", false)
+        nativeLibraryType.GetMethod("TryLoad", [| typeof<string>; typeof<IntPtr>.MakeByRefType() |])
+
+    let loadNativeLibrary path =
+        let arguments = [| path:>obj; IntPtr.Zero:>obj |]
+        if nativeLibraryTryLoad.Invoke(null, arguments) :?> bool then
+            arguments.[1] :?> IntPtr
+        else
+            IntPtr.Zero
+
     let probingFileNames (name: string) =
         // coreclr native library probing algorithm: https://github.com/dotnet/coreclr/blob/9773db1e7b1acb3ec75c9cc0e36bd62dcbacd6d5/src/System.Private.CoreLib/shared/System/Runtime/Loader/LibraryNameVariation.Unix.cs
         let isRooted = Path.IsPathRooted name
@@ -86,8 +61,7 @@ type NativeDllResolveHandlerCoreClr (_nativeProbingRoots: NativeResolutionProbe)
                             yield (sprintf "%s%s" p name)
         |]
 
-    let _resolveUnmanagedDll (_: Assembly) (name: string): IntPtr =
-
+    let resolveUnmanagedDll (_: Assembly) (name: string): IntPtr =
         // Enumerate probing roots looking for a dll that matches the probing name in the probed locations
         let probeForNativeLibrary root rid name =
             // Look for name in root
@@ -99,48 +73,74 @@ type NativeDllResolveHandlerCoreClr (_nativeProbingRoots: NativeResolutionProbe)
                     None)
 
         let probe =
-            match _nativeProbingRoots with
+            match nativeProbingRoots with
             | null -> None
-            | _ ->  _nativeProbingRoots.Invoke()
-                    |> Seq.tryPick(fun root ->
+            | _ ->
+                nativeProbingRoots.Invoke()
+                |> Seq.tryPick(fun root ->
                     probingFileNames name |> Seq.tryPick(fun name ->
                         let path = Path.Combine(root, name)
                         if File.Exists(path) then
                             Some path
                         else
-                            probingRids |> Seq.tryPick(fun rid -> probeForNativeLibrary root rid name)))
+                            RidHelpers.probingRids |> Seq.tryPick(fun rid -> probeForNativeLibrary root rid name)))
 
         match probe with
-        | Some path -> NativeAssemblyLoadContext.NativeLoadContext.LoadNativeLibrary(path)
+        | Some path -> loadNativeLibrary(path)
         | None -> IntPtr.Zero
 
     // netstandard 2.1 has this property, unfortunately we don't build with that yet
     //public event Func<Assembly, string, IntPtr> ResolvingUnmanagedDll
-    let eventInfo = typeof<AssemblyLoadContext>.GetEvent("ResolvingUnmanagedDll")
-    let handler = Func<Assembly, string, IntPtr> (_resolveUnmanagedDll)
+    let assemblyLoadContextType: Type = Type.GetType("System.Runtime.Loader.AssemblyLoadContext, System.Runtime.Loader", false)
+    let eventInfo, handler, defaultAssemblyLoadContext =
+        assemblyLoadContextType.GetEvent("ResolvingUnmanagedDll"), 
+        Func<Assembly, string, IntPtr> (resolveUnmanagedDll), 
+        assemblyLoadContextType.GetProperty("Default", BindingFlags.Static ||| BindingFlags.Public).GetValue(null, null)
 
-    do if not (isNull eventInfo) then eventInfo.AddEventHandler(AssemblyLoadContext.Default, handler)
+    do eventInfo.AddEventHandler(defaultAssemblyLoadContext, handler)
 
     interface IDisposable with
-        member _x.Dispose() =
-            if not (isNull eventInfo) then
-                eventInfo.RemoveEventHandler(AssemblyLoadContext.Default, handler)
-            ()
+        member _x.Dispose() = eventInfo.RemoveEventHandler(defaultAssemblyLoadContext, handler)
 
-#endif
 
-type NativeDllResolveHandler (_nativeProbingRoots: NativeResolutionProbe) =
-
-    let handler:IDisposable option =
-#if NETSTANDARD
+type NativeDllResolveHandler (nativeProbingRoots: NativeResolutionProbe) =
+    let handler: IDisposable option =
         if isRunningOnCoreClr then
-            Some (new NativeDllResolveHandlerCoreClr(_nativeProbingRoots) :> IDisposable)
+            Some (new NativeDllResolveHandlerCoreClr(nativeProbingRoots) :> IDisposable)
         else
-#endif
             None
+
+    let appendSemiColon (p: string) =
+        if not(p.EndsWith(";", StringComparison.OrdinalIgnoreCase)) then
+            p + ";"
+        else
+            p
+
+    let addedPaths = ConcurrentBag<string>()
+
+    let addProbeToProcessPath probePath =
+        let probe = appendSemiColon probePath
+        let path = appendSemiColon (Environment.GetEnvironmentVariable("PATH"))
+        if not (path.Contains(probe)) then
+            Environment.SetEnvironmentVariable("PATH", path + probe)
+            addedPaths.Add probe
+
+    let removeProbeFromProcessPath probePath =
+        if not(String.IsNullOrWhiteSpace(probePath)) then
+            let probe = appendSemiColon probePath
+            let path = appendSemiColon (Environment.GetEnvironmentVariable("PATH"))
+            if path.Contains(probe) then Environment.SetEnvironmentVariable("PATH", path.Replace(probe, ""))
+
+    member internal _.RefreshPathsInEnvironment(roots: string seq) =
+        for probePath in roots do
+            addProbeToProcessPath probePath
 
     interface IDisposable with
         member _.Dispose() =
             match handler with
             | None -> ()
             | Some handler -> handler.Dispose()
+
+            let mutable probe:string = null
+            while (addedPaths.TryTake(&probe)) do
+                removeProbeFromProcessPath probe

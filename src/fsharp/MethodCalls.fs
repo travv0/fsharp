@@ -16,11 +16,14 @@ open FSharp.Compiler.InfoReader
 open FSharp.Compiler.Infos
 open FSharp.Compiler.Lib
 open FSharp.Compiler.NameResolution
-open FSharp.Compiler.PrettyNaming
-open FSharp.Compiler.Range
+open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.SourceCodeServices.PrettyNaming
 open FSharp.Compiler.SyntaxTree
 open FSharp.Compiler.SyntaxTreeOps
 open FSharp.Compiler.TcGlobals
+open FSharp.Compiler.Text
+open FSharp.Compiler.Text.Range
+open FSharp.Compiler.TextLayout
 open FSharp.Compiler.TypedTree
 open FSharp.Compiler.TypedTreeBasics
 open FSharp.Compiler.TypedTreeOps
@@ -209,10 +212,16 @@ let AdjustCalledArgTypeForOptionals (g: TcGlobals) enforceNullableOptionalsKnown
                 // If neither and we are at the end of overload resolution then use the Nullable
                 elif enforceNullableOptionalsKnownTypes then 
                     calledArgTy
-                // If at the beginning of inference then use a type variable
+                // If at the beginning of inference then use a type variable.
                 else 
-                    let compgenId = mkSynId range0 unassignedTyparName
-                    mkTyparTy (Construct.NewTypar (TyparKind.Type, TyparRigidity.Flexible, Typar(compgenId, NoStaticReq, true), false, TyparDynamicReq.No, [], false, false))
+                    let destTy = destNullableTy g calledArgTy
+                    match calledArg.OptArgInfo with
+                    // Use the type variable from the Nullable if called arg is not optional.
+                    | NotOptional when isTyparTy g destTy ->
+                        destTy
+                    | _ ->
+                        let compgenId = mkSynId range0 unassignedTyparName
+                        mkTyparTy (Construct.NewTypar (TyparKind.Type, TyparRigidity.Flexible, Typar(compgenId, NoStaticReq, true), false, TyparDynamicReq.No, [], false, false))
             else
                 calledArgTy
 
@@ -478,34 +487,34 @@ type CalledMeth<'T>
 
     member x.amap = infoReader.amap
 
-      /// the method we're attempting to call 
+    /// The method we're attempting to call 
     member x.Method = minfo
 
-      /// the instantiation of the method we're attempting to call 
+    /// The instantiation of the method we're attempting to call 
     member x.CalledTyArgs = calledTyArgs
 
     member x.AllCalledArgs = fullCurriedCalledArgs
 
-      /// the instantiation of the method we're attempting to call 
+    /// The instantiation of the method we're attempting to call 
     member x.CalledTyparInst = 
         let tps = minfo.FormalMethodTypars 
         if tps.Length = calledTyArgs.Length then mkTyparInst tps calledTyArgs else []
 
-      /// the formal instantiation of the method we're attempting to call 
+    /// The formal instantiation of the method we're attempting to call 
     member x.CallerTyArgs = callerTyArgs
 
-      /// The types of the actual object arguments, if any
+    /// The types of the actual object arguments, if any
     member x.CallerObjArgTys = callerObjArgTys
 
-      /// The argument analysis for each set of curried arguments
+    /// The argument analysis for each set of curried arguments
     member x.ArgSets = argSets
 
-      /// return type after implicit deference of byref returns is taken into account
+    /// The return type after implicit deference of byref returns is taken into account
     member x.CalledReturnTypeAfterByrefDeref = 
         let retTy = methodRetTy
         if isByrefTy g retTy then destByrefTy g retTy else retTy
 
-      /// return type after tupling of out args is taken into account
+    /// Return type after tupling of out args is taken into account
     member x.CalledReturnTypeAfterOutArgTupling = 
         let retTy = x.CalledReturnTypeAfterByrefDeref
         if isNil unnamedCalledOutArgs then 
@@ -515,22 +524,22 @@ type CalledMeth<'T>
             if isUnitTy g retTy then mkRefTupledTy g outArgTys
             else mkRefTupledTy g (retTy :: outArgTys)
 
-      /// named setters
+    /// Named setters
     member x.AssignedItemSetters = assignedNamedProps
 
-      /// the property related to the method we're attempting to call, if any  
+    /// The property related to the method we're attempting to call, if any  
     member x.AssociatedPropertyInfo = pinfoOpt
 
-      /// unassigned args
+    /// Unassigned args
     member x.UnassignedNamedArgs = unassignedNamedItems
 
-      /// args assigned to specify values for attribute fields and properties (these are not necessarily "property sets")
+    /// Args assigned to specify values for attribute fields and properties (these are not necessarily "property sets")
     member x.AttributeAssignedNamedArgs = attributeAssignedNamedItems
 
-      /// unnamed called optional args: pass defaults for these
+    /// Unnamed called optional args: pass defaults for these
     member x.UnnamedCalledOptArgs = unnamedCalledOptArgs
 
-      /// unnamed called out args: return these as part of the return tuple
+    /// Unnamed called out args: return these as part of the return tuple
     member x.UnnamedCalledOutArgs = unnamedCalledOutArgs
 
     static member GetMethod (x: CalledMeth<'T>) = x.Method
@@ -619,7 +628,7 @@ type ArgumentAnalysis =
 let InferLambdaArgsForLambdaPropagation origRhsExpr = 
     let rec loop e = 
         match e with 
-        | SynExpr.Lambda (_, _, _, rest, _) -> 1 + loop rest
+        | SynExpr.Lambda (_, _, _, rest, _, _) -> 1 + loop rest
         | SynExpr.MatchLambda _ -> 1
         | _ -> 0
     loop origRhsExpr
@@ -747,10 +756,6 @@ let TakeObjAddrForMethodCall g amap (minfo: MethInfo) isMutable m objArgs f =
     let e, ety = f ccallInfo objArgs
     wrap e, ety
 
-//-------------------------------------------------------------------------
-// Build method calls.
-//------------------------------------------------------------------------- 
-
 /// Build an expression node that is a call to a .NET method. 
 let BuildILMethInfoCall g amap m isProp (minfo: ILMethInfo) valUseFlags minst direct args = 
     let valu = isStructTy g minfo.ApparentEnclosingType
@@ -785,7 +790,7 @@ let BuildFSharpMethodApp g m (vref: ValRef) vexp vexprty (args: Exprs) =
             match arity, args with 
             | (0|1), [] when typeEquiv g (domainOfFunTy g fty) g.unit_ty -> mkUnit g m, (args, rangeOfFunTy g fty)
             | 0, (arg :: argst) -> 
-                let msg = Layout.showL (Layout.sepListL (Layout.rightL (Layout.TaggedTextOps.tagText ";")) (List.map exprL args))
+                let msg = LayoutRender.showL (Layout.sepListL (Layout.rightL (TaggedText.tagText ";")) (List.map exprL args))
                 warning(InternalError(sprintf "Unexpected zero arity, args = %s" msg, m))
                 arg, (argst, rangeOfFunTy g fty)
             | 1, (arg :: argst) -> arg, (argst, rangeOfFunTy g fty)
@@ -853,7 +858,8 @@ let TryImportProvidedMethodBaseAsLibraryIntrinsic (amap: Import.ImportMap, m: ra
     match tryTcrefOfAppTy amap.g declaringType with
     | ValueSome declaringEntity ->
         if not declaringEntity.IsLocalRef && ccuEq declaringEntity.nlr.Ccu amap.g.fslibCcu then
-            match amap.g.knownIntrinsics.TryGetValue ((declaringEntity.LogicalName, methodName)) with 
+            let n = mbase.PUntaint((fun x -> x.GetParameters().Length), m)
+            match amap.g.knownIntrinsics.TryGetValue ((declaringEntity.LogicalName, None, methodName, n)) with 
             | true, vref -> Some vref
             | _ -> 
             match amap.g.knownFSharpCoreModules.TryGetValue declaringEntity.LogicalName with
@@ -1742,8 +1748,8 @@ let ILFieldStaticChecks g amap infoReader ad m (finfo : ILFieldInfo) =
 
     // Static IL interfaces fields are not supported in lower F# versions.
     if isInterfaceTy g finfo.ApparentEnclosingType then    
-        tryLanguageFeatureRuntimeErrorRecover infoReader LanguageFeature.DefaultInterfaceMemberConsumption m
-        tryLanguageFeatureErrorRecover g.langVersion LanguageFeature.DefaultInterfaceMemberConsumption m
+        checkLanguageFeatureRuntimeErrorRecover infoReader LanguageFeature.DefaultInterfaceMemberConsumption m
+        checkLanguageFeatureErrorRecover g.langVersion LanguageFeature.DefaultInterfaceMemberConsumption m
 
     CheckILFieldAttributes g finfo m
 
@@ -1840,6 +1846,7 @@ let GenWitnessExpr amap g m (traitInfo: TraitConstraintInfo) argExprs =
 
             | BuiltInSln -> 
                 Choice5Of5 ()
+
     match sln with
     | Choice1Of5(minfo, methArgTys) -> 
         let argExprs = 
@@ -1853,6 +1860,7 @@ let GenWitnessExpr amap g m (traitInfo: TraitConstraintInfo) argExprs =
             let argTypes =
                 minfo.GetParamTypes(amap, m, methArgTys) 
                 |> List.concat 
+
             // do not apply coercion to the 'receiver' argument
             let receiverArgOpt, argExprs = 
                 if minfo.IsInstance then
@@ -1860,6 +1868,13 @@ let GenWitnessExpr amap g m (traitInfo: TraitConstraintInfo) argExprs =
                     | h :: t -> Some h, t
                     | argExprs -> None, argExprs
                 else None, argExprs
+
+            // For methods taking no arguments, 'argExprs' will be a single unit expression here
+            let argExprs = 
+                 match argTypes, argExprs with
+                 | [], [_] -> []
+                 | _ -> argExprs
+
             let convertedArgs = (argExprs, argTypes) ||> List.map2 (fun expr expectedTy -> mkCoerceIfNeeded g expectedTy (tyOfExpr g expr) expr)
             match receiverArgOpt with
             | Some r -> r :: convertedArgs
@@ -1867,12 +1882,15 @@ let GenWitnessExpr amap g m (traitInfo: TraitConstraintInfo) argExprs =
 
         // Fix bug 1281: If we resolve to an instance method on a struct and we haven't yet taken 
         // the address of the object then go do that 
-        if minfo.IsStruct && minfo.IsInstance && (match argExprs with [] -> false | h :: _ -> not (isByrefTy g (tyOfExpr g h))) then 
-            let h, t = List.headAndTail argExprs
-            let wrap, h', _readonly, _writeonly = mkExprAddrOfExpr g true false PossiblyMutates h None m 
-            Some (wrap (Expr.Op (TOp.TraitCall traitInfo, [], (h' :: t), m)))
+        if minfo.IsStruct && minfo.IsInstance then 
+            match argExprs with
+            | h :: t when not (isByrefTy g (tyOfExpr g h)) ->
+                let wrap, h', _readonly, _writeonly = mkExprAddrOfExpr g true false PossiblyMutates h None m 
+                Some (wrap (Expr.Op (TOp.TraitCall traitInfo, [], (h' :: t), m)))
+            | _ ->
+                Some (MakeMethInfoCall amap m minfo methArgTys argExprs)
         else        
-            Some (MakeMethInfoCall amap m minfo methArgTys argExprs )
+            Some (MakeMethInfoCall amap m minfo methArgTys argExprs)
 
     | Choice2Of5 (tinst, rfref, isSet) -> 
         match isSet, rfref.RecdField.IsStatic, argExprs.Length with 
@@ -1901,6 +1919,7 @@ let GenWitnessExpr amap g m (traitInfo: TraitConstraintInfo) argExprs =
                 Some (mkRecdFieldGetViaExprAddr (argExprs.[0], rfref, tinst, m))
             else 
                 Some (mkRecdFieldGet g (argExprs.[0], rfref, tinst, m))
+
         | _ -> None 
 
     | Choice3Of5 (anonInfo, tinst, i) -> 
@@ -1910,8 +1929,34 @@ let GenWitnessExpr amap g m (traitInfo: TraitConstraintInfo) argExprs =
         else 
             Some (mkAnonRecdFieldGet g (anonInfo, argExprs.[0], tinst, i, m))
 
-    | Choice4Of5 expr ->
+    | Choice4Of5 expr -> 
         Some (MakeApplicationAndBetaReduce g (expr, tyOfExpr g expr, [], argExprs, m))
 
-    | Choice5Of5 () ->
-        None
+    | Choice5Of5 () -> 
+        match traitInfo.Solution with 
+        | None -> None // the trait has been generalized
+        | Some _-> 
+        // For these operators, the witness is just a call to the coresponding FSharp.Core operator
+        match g.TryMakeOperatorAsBuiltInWitnessInfo isStringTy isArrayTy traitInfo argExprs with
+        | Some (info, tyargs, actualArgExprs) -> 
+            tryMkCallCoreFunctionAsBuiltInWitness g info tyargs actualArgExprs m
+        | None -> 
+            // For all other built-in operators, the witness is a call to the coresponding BuiltInWitnesses operator
+            // These are called as F# methods not F# functions
+            tryMkCallBuiltInWitness g traitInfo argExprs m
+        
+/// Generate a lambda expression for the given solved trait.
+let GenWitnessExprLambda amap g m (traitInfo: TraitConstraintInfo) =
+    let witnessInfo = traitInfo.TraitKey
+    let argtysl = GenWitnessArgTys g witnessInfo
+    let vse = argtysl |> List.mapiSquared (fun i j ty -> mkCompGenLocal m ("arg" + string i + "_" + string j) ty) 
+    let vsl = List.mapSquared fst vse
+    match GenWitnessExpr amap g m traitInfo (List.concat (List.mapSquared snd vse)) with 
+    | Some expr -> 
+        Choice2Of2 (mkMemberLambdas m [] None None vsl (expr, tyOfExpr g expr))
+    | None -> 
+        Choice1Of2 traitInfo
+
+/// Generate the arguments passed for a set of (solved) traits in non-generic code
+let GenWitnessArgs amap g m (traitInfos: TraitConstraintInfo list) =
+    [ for traitInfo in traitInfos -> GenWitnessExprLambda amap g m traitInfo ]

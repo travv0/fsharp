@@ -12,10 +12,9 @@ open Microsoft.CodeAnalysis.Text
 open Microsoft.CodeAnalysis.CodeFixes
 open Microsoft.CodeAnalysis.CodeActions
 
-open FSharp.Compiler
-open FSharp.Compiler.Range
 open FSharp.Compiler.SourceCodeServices
 open FSharp.Compiler.SyntaxTree
+open FSharp.Compiler.Text
 
 [<NoEquality; NoComparison>]
 type internal InterfaceState =
@@ -107,7 +106,7 @@ type internal FSharpImplementInterfaceCodeFixProvider
         else
             let membersAndRanges = InterfaceStubGenerator.getMemberNameAndRanges state.InterfaceData
             let interfaceMembers = InterfaceStubGenerator.getInterfaceMembers entity
-            let hasTypeCheckError = results.Errors |> Array.exists (fun e -> e.Severity = FSharpErrorSeverity.Error)                
+            let hasTypeCheckError = results.Errors |> Array.exists (fun e -> e.Severity = FSharpDiagnosticSeverity.Error)                
             // This comparison is a bit expensive
             if hasTypeCheckError && List.length membersAndRanges <> Seq.length interfaceMembers then    
                 let diagnostics = context.Diagnostics |> Seq.filter (fun x -> fixableDiagnosticIds |> List.contains x.Id) |> Seq.toImmutableArray
@@ -120,7 +119,7 @@ type internal FSharpImplementInterfaceCodeFixProvider
                                     let! sourceText = context.Document.GetTextAsync(cancellationToken) |> Async.AwaitTask
                                     let getMemberByLocation(name, range: range) =
                                         let lineStr = sourceText.Lines.[range.EndLine-1].ToString()
-                                        results.GetSymbolUseAtLocation(range.EndLine, range.EndColumn, lineStr, [name], userOpName=userOpName)
+                                        results.GetSymbolUseAtLocation(range.EndLine, range.EndColumn, lineStr, [name])
                                     let! implementedMemberSignatures =
                                         InterfaceStubGenerator.getImplementedMemberSignatures getMemberByLocation displayContext state.InterfaceData    
                                     let newSourceText = applyImplementInterface sourceText state displayContext implementedMemberSignatures entity indentSize verboseMode
@@ -134,11 +133,11 @@ type internal FSharpImplementInterfaceCodeFixProvider
             else 
                 ()
             
-    override __.FixableDiagnosticIds = Seq.toImmutableArray fixableDiagnosticIds
+    override _.FixableDiagnosticIds = Seq.toImmutableArray fixableDiagnosticIds
 
-    override __.RegisterCodeFixesAsync context : Task =
+    override _.RegisterCodeFixesAsync context : Task =
         asyncMaybe {
-            let! parsingOptions, projectOptions = projectInfoManager.TryGetOptionsForEditingDocumentOrProject(context.Document, context.CancellationToken)
+            let! parsingOptions, projectOptions = projectInfoManager.TryGetOptionsForEditingDocumentOrProject(context.Document, context.CancellationToken, userOpName)
             let cancellationToken = context.CancellationToken
             let! sourceText = context.Document.GetTextAsync(cancellationToken)
             let! _, parsedInput, checkFileResults = checker.ParseAndCheckDocument(context.Document, projectOptions, sourceText = sourceText, userOpName = userOpName)
@@ -169,12 +168,12 @@ type internal FSharpImplementInterfaceCodeFixProvider
                 | _ -> 
                     Some context.Span.End
             let! interfaceState = queryInterfaceState appendBracketAt interfacePos tokens parsedInput                        
-            let! symbol = Tokenizer.getSymbolAtPosition(context.Document.Id, sourceText, fixupPosition, context.Document.FilePath, defines, SymbolLookupKind.Greedy, false)
+            let! symbol = Tokenizer.getSymbolAtPosition(context.Document.Id, sourceText, fixupPosition, context.Document.FilePath, defines, SymbolLookupKind.Greedy, false, false)
             let fcsTextLineNumber = textLine.LineNumber + 1
             let lineContents = textLine.ToString()                            
             let! options = context.Document.GetOptionsAsync(cancellationToken)
             let tabSize = options.GetOption(FormattingOptions.TabSize, FSharpConstants.FSharpLanguageName)
-            let! symbolUse = checkFileResults.GetSymbolUseAtLocation(fcsTextLineNumber, symbol.Ident.idRange.EndColumn, lineContents, symbol.FullIsland, userOpName=userOpName)
+            let! symbolUse = checkFileResults.GetSymbolUseAtLocation(fcsTextLineNumber, symbol.Ident.idRange.EndColumn, lineContents, symbol.FullIsland)
             let! entity, displayContext = 
                 match symbolUse.Symbol with
                 | :? FSharpEntity as entity -> 

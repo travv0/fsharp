@@ -6,7 +6,7 @@ open FSharp.Compiler
 open FSharp.Compiler.AccessibilityLogic
 open FSharp.Compiler.Import
 open FSharp.Compiler.NameResolution
-open FSharp.Compiler.Range
+open FSharp.Compiler.Text
 open FSharp.Compiler.TypedTreeOps
 open FSharp.Compiler.TcGlobals
 
@@ -16,10 +16,12 @@ type SemanticClassificationType =
     | ReferenceType
     | ValueType
     | UnionCase
+    | UnionCaseField
     | Function
     | Property
     | MutableVar
     | Module
+    | Namespace
     | Printf
     | ComputationExpression
     | IntrinsicFunction
@@ -27,14 +29,32 @@ type SemanticClassificationType =
     | Interface
     | TypeArgument
     | Operator
-    | Disposable
+    | DisposableType
+    | DisposableTopLevelValue
+    | DisposableLocalValue
+    | Method
+    | ExtensionMethod
+    | ConstructorForReferenceType
+    | ConstructorForValueType
+    | Literal
+    | RecordField
+    | MutableRecordField
+    | RecordFieldAsFunction
+    | Exception
+    | Field
+    | Event
+    | Delegate
+    | NamedArgument
+    | Value
+    | LocalValue
+    | Type
+    | TypeDef
+    | Plaintext
 
 /// Extension methods for the TcResolutions type.
 [<AutoOpen>]
 module internal TcResolutionsExtensions =
-
     val (|CNR|) : cnr: CapturedNameResolution -> (Item * ItemOccurence * DisplayEnv * NameResolutionEnv * AccessorDomain * range)
 
     type TcResolutions with
-
         member GetSemanticClassification: g: TcGlobals * amap: ImportMap * formatSpecifierLocations: (range * int) [] * range: range option -> struct(range * SemanticClassificationType) []

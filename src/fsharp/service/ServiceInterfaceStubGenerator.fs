@@ -7,9 +7,11 @@ open System.Diagnostics
 
 open FSharp.Compiler
 open FSharp.Compiler.AbstractIL.Internal.Library 
-open FSharp.Compiler.Range
 open FSharp.Compiler.SourceCodeServices
 open FSharp.Compiler.SyntaxTree
+open FSharp.Compiler.SyntaxTreeOps
+open FSharp.Compiler.Text
+open FSharp.Compiler.Text.Range
         
 #if !FX_NO_INDENTED_TEXT_WRITER
 [<AutoOpen>]
@@ -21,33 +23,33 @@ module internal CodeGenerationUtils =
         let stringWriter = new StringWriter()
         let indentWriter = new IndentedTextWriter(stringWriter, " ")
 
-        member __.Write(s: string) =
+        member _.Write(s: string) =
             indentWriter.Write("{0}", s)
 
-        member __.Write(s: string, [<ParamArray>] objs: obj []) =
+        member _.Write(s: string, [<ParamArray>] objs: obj []) =
             indentWriter.Write(s, objs)
 
-        member __.WriteLine(s: string) =
+        member _.WriteLine(s: string) =
             indentWriter.WriteLine("{0}", s)
 
-        member __.WriteLine(s: string, [<ParamArray>] objs: obj []) =
+        member _.WriteLine(s: string, [<ParamArray>] objs: obj []) =
             indentWriter.WriteLine(s, objs)
 
         member x.WriteBlankLines count =
             for _ in 0 .. count - 1 do
                 x.WriteLine ""
 
-        member __.Indent i = 
+        member _.Indent i = 
             indentWriter.Indent <- indentWriter.Indent + i
 
-        member __.Unindent i = 
+        member _.Unindent i = 
             indentWriter.Indent <- max 0 (indentWriter.Indent - i)
 
-        member __.Dump() =
+        member _.Dump() =
             indentWriter.InnerWriter.ToString()
 
         interface IDisposable with
-            member __.Dispose() =
+            member _.Dispose() =
                 stringWriter.Dispose()
                 indentWriter.Dispose()
 
@@ -69,7 +71,7 @@ module internal CodeGenerationUtils =
     /// Represent environment where a captured identifier should be renamed
     type NamesWithIndices = Map<string, Set<int>>
 
-    let keywordSet = set PrettyNaming.KeywordNames
+    let keywordSet = set FSharpKeywords.KeywordNames
 
     /// Rename a given argument if the identifier has been used
     let normalizeArgName (namesWithIndices: NamesWithIndices) nm =
@@ -112,8 +114,8 @@ type InterfaceData =
             ty.Range
     member x.TypeParameters = 
         match x with
-        | InterfaceData.Interface(ty, _)
-        | InterfaceData.ObjExpr(ty, _) ->
+        | InterfaceData.Interface(StripParenTypes ty, _)
+        | InterfaceData.ObjExpr(StripParenTypes ty, _) ->
             let rec (|RationalConst|) = function
                 | SynRationalConst.Integer i ->
                     string i
@@ -158,6 +160,8 @@ type InterfaceData =
                     Some (sprintf "%s^%s" typeName power)
                 | SynType.MeasureDivide(TypeIdent numerator, TypeIdent denominator, _) ->
                     Some (sprintf "%s/%s" numerator denominator)
+                | SynType.Paren(TypeIdent typeName, _) ->
+                    Some typeName
                 | _ -> 
                     None
             match ty with
@@ -485,7 +489,7 @@ module InterfaceStubGenerator =
     let getInterfaceMembers (e: FSharpEntity) = 
         seq {
             for (iface, instantiations) in getInterfaces e do
-                yield! iface.TryGetMembersFunctionsAndValues
+                yield! iface.TryGetMembersFunctionsAndValues()
                        |> Seq.choose (fun m -> 
                            // Use this hack when FCS doesn't return enough information on .NET properties and events
                            if m.IsProperty || m.IsEventAddMethod || m.IsEventRemoveMethod then 
@@ -546,7 +550,7 @@ module InterfaceStubGenerator =
     ///  (1) Crack ASTs to get member names and their associated ranges
     ///  (2) Check symbols of those members based on ranges
     ///  (3) If any symbol found, capture its member signature 
-    let getImplementedMemberSignatures (getMemberByLocation: string * range -> Async<FSharpSymbolUse option>) displayContext interfaceData = 
+    let getImplementedMemberSignatures (getMemberByLocation: string * range -> FSharpSymbolUse option) displayContext interfaceData = 
         let formatMemberSignature (symbolUse: FSharpSymbolUse) =            
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as m ->
@@ -564,10 +568,10 @@ module InterfaceStubGenerator =
                 //fail "Should only accept symbol uses of members."
                 None
         async {
-            let! symbolUses = 
+            let symbolUses = 
                 getMemberNameAndRanges interfaceData
                 |> List.toArray
-                |> Array.mapAsync getMemberByLocation
+                |> Array.map getMemberByLocation
             return symbolUses |> Array.choose (Option.bind formatMemberSignature >> Option.map String.Concat)
                               |> Set.ofArray
         }
@@ -799,7 +803,7 @@ module InterfaceStubGenerator =
                     walkExpr synExpr
                 | SynExpr.CompExpr (_, _, synExpr, _range) ->
                     walkExpr synExpr
-                | SynExpr.Lambda (_, _, _synSimplePats, synExpr, _range) ->
+                | SynExpr.Lambda (_, _, _synSimplePats, synExpr, _, _range) ->
                      walkExpr synExpr
 
                 | SynExpr.MatchLambda (_isExnMatch, _argm, synMatchClauseList, _spBind, _wholem) -> 

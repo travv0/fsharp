@@ -5,9 +5,18 @@ open System
 open System.Diagnostics
 open System.IO
 open System.Reflection
+open FSDependencyManager
 
 [<AttributeUsage(AttributeTargets.Assembly ||| AttributeTargets.Class , AllowMultiple = false)>]
 type DependencyManagerAttribute() = inherit System.Attribute()
+
+/// The result of building the package resolution files.
+type PackageBuildResolutionResult =
+    { success: bool
+      projectPath: string
+      stdOut: string array
+      stdErr: string array
+      resolutionsFile: string option }
 
 module internal Utilities =
 
@@ -118,7 +127,7 @@ module internal Utilities =
         //    In an sdk install we are always installed in:   sdk\3.0.100-rc2-014234\FSharp
         //    dotnet or dotnet.exe will be found in the directory that contains the sdk directory
         // 3. We are loaded in-process to some other application ... Eg. try .net
-        //    See if the host is dotnet.exe ... from netcoreapp3.0 on this is fairly unlikely
+        //    See if the host is dotnet.exe ... from netcoreapp3.1 on this is fairly unlikely
         // 4. If it's none of the above we are going to have to rely on the path containing the way to find dotnet.exe
         //
         if isRunningOnCoreClr then
@@ -126,13 +135,13 @@ module internal Utilities =
             | value when not (String.IsNullOrEmpty(value)) ->
                 Some value                           // Value set externally
             | _ ->
-                // Probe for netsdk install
+                // Probe for netsdk install, dotnet. and dotnet.exe is a constant offset from the location of System.Int32
                 let dotnetLocation =
                     let dotnetApp =
                         let platform = Environment.OSVersion.Platform
                         if platform = PlatformID.Unix then "dotnet" else "dotnet.exe"
-                    let assemblyLocation = typeof<DependencyManagerAttribute>.GetTypeInfo().Assembly.Location
-                    Path.Combine(assemblyLocation, "../../..", dotnetApp)
+                    let assemblyLocation = Path.GetDirectoryName(typeof<Int32>.GetTypeInfo().Assembly.Location)
+                    Path.GetFullPath(Path.Combine(assemblyLocation, "../../..", dotnetApp))
 
                 if File.Exists(dotnetLocation) then
                     Some dotnetLocation
@@ -145,20 +154,21 @@ module internal Utilities =
         else
             None
 
-    let drainStreamToMemory (stream: StreamReader) =
-        let mutable list = ResizeArray()
-        let rec copyLines () =
-            match stream.ReadLine() with
-            | null -> ()
-            | line ->
-                list.Add line
-                copyLines ()
-        copyLines ()
-        list.ToArray()
-
-    let executeBuild pathToExe arguments workingDir =
+    let executeBuild pathToExe arguments workingDir timeout =
         match pathToExe with
         | Some path ->
+            let errorsList = ResizeArray()
+            let outputList = ResizeArray()
+            let mutable errorslock = obj
+            let mutable outputlock = obj
+            let outputDataReceived (message: string) =
+                if not (isNull message) then
+                    lock outputlock (fun () -> outputList.Add(message))
+
+            let errorDataReceived (message: string) =
+                if not (isNull message) then
+                    lock errorslock (fun () -> errorsList.Add(message))
+
             let psi = ProcessStartInfo()
             psi.FileName <- path
             psi.WorkingDirectory <- workingDir
@@ -166,32 +176,33 @@ module internal Utilities =
             psi.RedirectStandardError <- true
             psi.Arguments <- arguments
             psi.CreateNoWindow <- true
+            psi.EnvironmentVariables.Remove("MSBuildSDKsPath")          // Host can sometimes add this, and it can break things
             psi.UseShellExecute <- false
 
             use p = new Process()
             p.StartInfo <- psi
-            p.Start() |> ignore
 
-            let stdOut = drainStreamToMemory p.StandardOutput
-            let stdErr = drainStreamToMemory p.StandardError
+            p.OutputDataReceived.Add(fun a -> outputDataReceived a.Data)
+            p.ErrorDataReceived.Add(fun a ->  errorDataReceived a.Data)
 
-#if Debug
-            File.WriteAllLines(Path.Combine(workingDir, "StandardOutput.txt"), stdOut)
-            File.WriteAllLines(Path.Combine(workingDir, "StandardError.txt"), stdErr)
+            if p.Start() then
+                p.BeginOutputReadLine()
+                p.BeginErrorReadLine()
+                if not(p.WaitForExit(timeout)) then
+                    // Timed out resolving throw a diagnostic.
+                    raise (new TimeoutException(SR.timedoutResolvingPackages(psi.FileName, psi.Arguments)))
+                else
+                    p.WaitForExit()
+
+#if DEBUG
+            File.WriteAllLines(Path.Combine(workingDir, "StandardOutput.txt"), outputList)
+            File.WriteAllLines(Path.Combine(workingDir, "StandardError.txt"), errorsList)
 #endif
-
-            p.WaitForExit()
-
-            if p.ExitCode <> 0 then
-                //Write StandardError.txt to err stream
-                for line in stdOut do Console.Out.WriteLine(line)
-                for line in stdErr do Console.Error.WriteLine(line)
-
-            p.ExitCode = 0, stdOut, stdErr
+            p.ExitCode = 0, outputList.ToArray(), errorsList.ToArray()
 
         | None -> false, Array.empty, Array.empty
 
-    let buildProject projectPath binLogPath =
+    let buildProject projectPath binLogPath timeout =
         let binLoggingArguments =
             match binLogPath with
             | Some(path) ->
@@ -201,19 +212,28 @@ module internal Utilities =
                 sprintf "/bl:\"%s\"" path
             | None -> ""
 
+        let timeout =
+            match timeout with
+            | Some(timeout) -> timeout
+            | None -> -1
+
         let arguments prefix =
-            sprintf "%s -restore %s %c%s%c /t:InteractivePackageManagement" prefix binLoggingArguments '\"' projectPath '\"'
+            sprintf "%s -restore %s %c%s%c /nologo /t:InteractivePackageManagement" prefix binLoggingArguments '\"' projectPath '\"'
 
         let workingDir = Path.GetDirectoryName projectPath
 
-        let succeeded, stdOut, stdErr =
+        let success, stdOut, stdErr =
             if not (isRunningOnCoreClr) then
                 // The Desktop build uses "msbuild" to build
-                executeBuild msbuildExePath (arguments "") workingDir
+                executeBuild msbuildExePath (arguments "-v:quiet") workingDir timeout
             else
                 // The coreclr uses "dotnet msbuild" to build
-                executeBuild dotnetHostPath (arguments "msbuild") workingDir
+                executeBuild dotnetHostPath (arguments "msbuild -v:quiet") workingDir timeout
 
         let outputFile = projectPath + ".resolvedReferences.paths"
-        let resultOutFile = if succeeded && File.Exists(outputFile) then Some outputFile else None
-        succeeded, stdOut, stdErr, resultOutFile
+        let resolutionsFile = if success && File.Exists(outputFile) then Some outputFile else None
+        { success = success
+          projectPath = projectPath
+          stdOut = stdOut
+          stdErr = stdErr
+          resolutionsFile = resolutionsFile }

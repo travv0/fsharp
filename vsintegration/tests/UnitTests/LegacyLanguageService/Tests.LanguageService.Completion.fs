@@ -346,22 +346,22 @@ a.
             [
                 [
                 "type A() ="
-                "   member __.X = ()"
+                "   member _.X = ()"
                 "   member this."
                 ]
                 [
                 "type A() ="
-                "   member __.X = ()"
+                "   member _.X = ()"
                 "   member private this."
                 ]
                 [
                 "type A() ="
-                "   member __.X = ()"
+                "   member _.X = ()"
                 "   member public this."
                 ]
                 [
                 "type A() ="
-                "   member __.X = ()"
+                "   member _.X = ()"
                 "   member internal this."
                 ]
 
@@ -519,10 +519,10 @@ a.
             [
                 "type Foo = Foo"
                 "    with"
-                "        member __.Bar = 1"
-                "        member __.PublicMethodForIntellisense() = 2"
-                "        member internal __.InternalMethod() = 3"
-                "        member private __.PrivateProperty = 4"
+                "        member _.Bar = 1"
+                "        member _.PublicMethodForIntellisense() = 2"
+                "        member internal _.InternalMethod() = 3"
+                "        member private _.PrivateProperty = 4"
                 ""
                 "let u: Unit ="
                 "    [ Foo ]"
@@ -3817,13 +3817,6 @@ let x = query { for bbbb in abbbbc(*D0*) do
                     type MyAttr() = inherit Attribute()")
 
     [<Test>]
-    member public this.``Attribute.WhenAttachedToNothing.Bug70080``() =        
-        this.AutoCompleteBug70080Helper(@"
-                    open System
-                    [<Attr     // expect AttributeUsage
-                    // nothing here")
-
-    [<Test>]
     member public this.``Attribute.WhenAttachedToLetInNamespace.Bug70080``() =        
         this.AutoCompleteBug70080Helper @"
                     namespace Foo
@@ -3871,7 +3864,7 @@ let x = query { for bbbb in abbbbc(*D0*) do
             [ @"
                     type C() = 
                         let someValue = ""abc""
-                        member __.M() = 
+                        member _.M() = 
                           let x = 1
                           match someValue. with
                             let x = 1
@@ -3909,8 +3902,8 @@ let x = query { for bbbb in abbbbc(*D0*) do
         AssertAutoCompleteContains 
             [ "open System." ]
             "." // marker
-            [ "Collections"; "Console" ] // should contain (namespace, static type)
-            [ "Int32" ] // should not contain (non-static type)
+            [ "Collections" ] // should contain (namespace)
+            [ ] // should not contain
 
     [<Test>]
     member public this.``OpenNamespaceOrModule.CompletionOnlyContainsNamespaceOrModule.Case2``() =        
@@ -4673,7 +4666,7 @@ let x = query { for bbbb in abbbbc(*D0*) do
         MoveCursorToEndOfMarker(file,"System.Windows.")
         let completions = AutoCompleteAtCursor(file)
         printfn "Completions=%A" completions
-        Assert.AreEqual(1, completions.Length)
+        Assert.AreEqual(3, completions.Length)
         
     /// Tests whether we're correctly showing both type and module when they have the same name
     [<Test>]
@@ -5199,32 +5192,6 @@ let x = query { for bbbb in abbbbc(*D0*) do
         gpatcc.AssertExactly(0,0)
 
 
-    [<Test>]
-    member this.``BadCompletionAfterQuicklyTyping.Bug177519.NowWorking``() =        
-        // this test is similar to "Bug72561.Noteworthy" but uses name resolutions rather than expression typings
-        // name resolutions currently still respond with stale info
-        let code = [ "let A = 42"
-                     "let B = \"\""
-                     "A.    // quickly backspace and retype B. --> exact name resolution code path" ]
-        let (_, _, file) = this.CreateSingleFileProject(code)
-        
-        TakeCoffeeBreak(this.VS)
-        let gpatcc = GlobalParseAndTypeCheckCounter.StartNew(this.VS)
-        let code2= [ "let A = 42"
-                     "let B = \"\""
-                     "B.    // quickly backspace and retype B. --> exact name resolution code path" ]
-        ReplaceFileInMemoryWithoutCoffeeBreak file code2
-        MoveCursorToEndOfMarker(file, "B.")
-        // Note: no TakeCoffeeBreak(this.VS)
-        let completions = AutoCompleteAtCursor file
-        AssertCompListIsEmpty(completions)  // empty completion list means second-chance intellisense will kick in
-        // if we wait...
-        TakeCoffeeBreak(this.VS)
-        let completions = AutoCompleteAtCursor file
-        // ... we get the expected answer
-        AssertCompListContainsAll(completions, ["Chars"])  // has correct string info
-        gpatcc.AssertExactly(0,0)
-                                             
 //*********************************************Previous Completion test and helper*****
     member private this.VerifyCompListDoesNotContainAnyAtStartOfMarker(fileContents : string, marker : string, list : string list) =
         let (solution, project, file) = this.CreateSingleFileProject(fileContents)
@@ -5313,17 +5280,6 @@ let x = query { for bbbb in abbbbc(*D0*) do
         AssertCtrlSpaceCompleteContains 
             ["""
                     module Foo
-                    open System
-                    [<
-             """]
-            "[<"
-            ["AttributeUsage"]
-            []
-      
-    [<Test>]
-    member this.``Attributes.CanSeeOpenNamespaces.Bug268290.Case2``() =
-        AssertCtrlSpaceCompleteContains 
-            ["""
                     open System
                     [<
              """]
@@ -5590,8 +5546,8 @@ let x = query { for bbbb in abbbbc(*D0*) do
         this.VerifyDotCompListContainAllAtStartOfMarker(
             fileContents = """
                 type T() = 
-                    member __.P with get() = new T()
-                    member __.M() = [|1..2|]
+                    member _.P with get() = new T()
+                    member _.M() = [|1..2|]
                 let t = new T()
                 t.P.M()(*marker*)  """,
             marker = "(*marker*)",
@@ -5602,7 +5558,7 @@ let x = query { for bbbb in abbbbc(*D0*) do
         this.VerifyDotCompListContainAllAtStartOfMarker(
             fileContents = """
                 type T() = 
-                    member __.M() = [|1..2|]
+                    member _.M() = [|1..2|]
 
                 type R = { P : T } 
                     

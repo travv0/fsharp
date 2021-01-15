@@ -9,8 +9,7 @@ module internal FSharp.Compiler.TypedTreeBasics
 open FSharp.Compiler.AbstractIL.IL 
 open FSharp.Compiler.AbstractIL.Internal.Library
 open FSharp.Compiler.CompilerGlobalState
-open FSharp.Compiler.Lib
-open FSharp.Compiler.Range
+open FSharp.Compiler.Text
 open FSharp.Compiler.SyntaxTree
 open FSharp.Compiler.TypedTree
 
@@ -97,7 +96,6 @@ let typarEq (lv1: Typar) (lv2: Typar) = (lv1.Stamp = lv2.Stamp)
 /// Equality on type variables, implemented as reference equality. This should be equivalent to using typarEq.
 let typarRefEq (tp1: Typar) (tp2: Typar) = (tp1 === tp2)
 
-
 /// Equality on value specs, implemented as reference equality
 let valEq (lv1: Val) (lv2: Val) = (lv1 === lv2)
 
@@ -172,6 +170,7 @@ let (|VRefLocal|VRefNonLocal|) (x: ValRef) =
     | _ -> VRefNonLocal x.nlr
 
 let mkNonLocalValRef mp id = VRefNonLocal {EnclosingEntity = ERefNonLocal mp; ItemKey=id }
+
 let mkNonLocalValRefPreResolved x mp id = VRefNonLocalPreResolved x {EnclosingEntity = ERefNonLocal mp; ItemKey=id }
 
 let ccuOfValRef vref =  
@@ -412,17 +411,14 @@ let primUnionCaseRefEq compilingFslib fslibCcu (UnionCaseRef(tcr1, c1) as uc1) (
 ///
 /// Note this routine doesn't take type forwarding into account
 let primValRefEq compilingFslib fslibCcu (x: ValRef) (y: ValRef) =
-    x === y ||
-    if (x.IsResolved && y.IsResolved && x.ResolvedTarget === y.ResolvedTarget) ||
-       (x.IsLocalRef && y.IsLocalRef && valEq x.ResolvedTarget y.ResolvedTarget) then
-        true
-    else
-           (// Use TryDeref to guard against the platforms/times when certain F# language features aren't available,
-            // e.g. CompactFramework doesn't have support for quotations.
-            match x.TryDeref with
-            | ValueSome v1 -> match y.TryDeref with ValueSome v2 -> v1 === v2 | _ -> false
-            | _ -> match y.TryDeref with ValueNone -> true | _ -> false)
-        || (if compilingFslib then fslibValRefEq fslibCcu x y else false)
+    x === y
+    || (x.IsResolved && y.IsResolved && x.ResolvedTarget === y.ResolvedTarget)
+    || (x.IsLocalRef && y.IsLocalRef && valEq x.ResolvedTarget y.ResolvedTarget)
+    || // Use TryDeref to guard against the platforms/times when certain F# language features aren't available
+       match x.TryDeref with
+       | ValueSome v1 -> match y.TryDeref with ValueSome v2 -> v1 === v2 | ValueNone -> false
+       | ValueNone -> match y.TryDeref with ValueNone -> true | ValueSome _ -> false
+    || (compilingFslib && fslibValRefEq fslibCcu x y)
 
 //---------------------------------------------------------------------------
 // pubpath/cpath mess

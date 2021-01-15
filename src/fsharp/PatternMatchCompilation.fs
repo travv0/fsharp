@@ -7,13 +7,18 @@ open FSharp.Compiler
 open FSharp.Compiler.AbstractIL.IL
 open FSharp.Compiler.AbstractIL.Internal.Library
 open FSharp.Compiler.AbstractIL.Diagnostics
+open FSharp.Compiler.AccessibilityLogic
 open FSharp.Compiler.CompilerGlobalState
 open FSharp.Compiler.ErrorLogger
+open FSharp.Compiler.InfoReader
 open FSharp.Compiler.Lib
-open FSharp.Compiler.PrettyNaming
-open FSharp.Compiler.Range
+open FSharp.Compiler.MethodCalls
+open FSharp.Compiler.SourceCodeServices.PrettyNaming
 open FSharp.Compiler.SyntaxTree
 open FSharp.Compiler.TcGlobals
+open FSharp.Compiler.Text
+open FSharp.Compiler.Text.Range
+open FSharp.Compiler.TextLayout
 open FSharp.Compiler.TypedTree
 open FSharp.Compiler.TypedTreeBasics
 open FSharp.Compiler.TypedTreeOps
@@ -175,7 +180,7 @@ let notNullText = "some-non-null-value"
 let otherSubtypeText = "some-other-subtype"
 
 /// Create a TAST const value from an IL-initialized field read from .NET metadata
-// (Originally moved from TcFieldInit in TypeChecker.fs -- feel free to move this somewhere more appropriate)
+// (Originally moved from TcFieldInit in CheckExpressions.fs -- feel free to move this somewhere more appropriate)
 let ilFieldToTastConst lit =
     match lit with
     | ILFieldInit.String s -> Const.String s
@@ -358,10 +363,10 @@ let ShowCounterExample g denv m refuted =
             match refutations with
             | [] -> raise CannotRefute
             | (r, eck) :: t ->
-                if verbose then dprintf "r = %s (enumCoversKnownValue = %b)\n" (Layout.showL (exprL r)) eck
+                if verbose then dprintf "r = %s (enumCoversKnownValue = %b)\n" (LayoutRender.showL (exprL r)) eck
                 List.fold (fun (rAcc, eckAcc) (r, eck) ->
                     CombineRefutations g rAcc r, eckAcc || eck) (r, eck) t
-        let text = Layout.showL (NicePrint.dataExprL denv counterExample)
+        let text = LayoutRender.showL (NicePrint.dataExprL denv counterExample)
         let failingWhenClause = refuted |> List.exists (function RefutedWhenClause -> true | _ -> false)
         Some(text, failingWhenClause, enumCoversKnown)
 
@@ -676,20 +681,20 @@ let rec BuildSwitch inpExprOpt g expr edges dflt m =
 #if DEBUG
 let rec layoutPat pat =
     match pat with
-    | TPat_query (_, pat, _) -> Layout.(--) (Layout.wordL (Layout.TaggedTextOps.tagText "query")) (layoutPat pat)
-    | TPat_wild _ -> Layout.wordL (Layout.TaggedTextOps.tagText "wild")
-    | TPat_as _ -> Layout.wordL (Layout.TaggedTextOps.tagText "var")
+    | TPat_query (_, pat, _) -> Layout.(--) (Layout.wordL (TaggedText.tagText "query")) (layoutPat pat)
+    | TPat_wild _ -> Layout.wordL (TaggedText.tagText "wild")
+    | TPat_as _ -> Layout.wordL (TaggedText.tagText "var")
     | TPat_tuple (_, pats, _, _)
     | TPat_array (pats, _, _) -> Layout.bracketL (Layout.tupleL (List.map layoutPat pats))
-    | _ -> Layout.wordL (Layout.TaggedTextOps.tagText "?")
+    | _ -> Layout.wordL (TaggedText.tagText "?")
 
-let layoutPath _p = Layout.wordL (Layout.TaggedTextOps.tagText "<path>")
+let layoutPath _p = Layout.wordL (TaggedText.tagText "<path>")
 
 let layoutActive (Active (path, _subexpr, pat)) =
-    Layout.(--) (Layout.wordL (Layout.TaggedTextOps.tagText "Active")) (Layout.tupleL [layoutPath path; layoutPat pat])
+    Layout.(--) (Layout.wordL (TaggedText.tagText "Active")) (Layout.tupleL [layoutPath path; layoutPat pat])
 
 let layoutFrontier (Frontier (i, actives, _)) =
-    Layout.(--) (Layout.wordL (Layout.TaggedTextOps.tagText "Frontier ")) (Layout.tupleL [intL i; Layout.listL layoutActive actives])
+    Layout.(--) (Layout.wordL (TaggedText.tagText "Frontier ")) (Layout.tupleL [intL i; Layout.listL layoutActive actives])
 #endif
 
 let mkFrontiers investigations i =
@@ -746,7 +751,7 @@ let getDiscrim (EdgeDiscrim(_, discrim, _)) = discrim
 
 
 let CompilePatternBasic
-        g denv amap exprm matchm
+        (g: TcGlobals) denv amap tcVal infoReader exprm matchm
         warnOnUnused
         warnOnIncomplete
         actionOnFailure
@@ -789,14 +794,51 @@ let CompilePatternBasic
                     mkInt g matchm 0
 
                 | Rethrow ->
-                    // Rethrow unmatched try-catch exn. No sequence point at the target since its not real code.
+                    // Rethrow unmatched try-with exn. No sequence point at the target since its not real code.
                     mkReraise matchm resultTy
 
                 | Throw ->
-                    // We throw instead of rethrow on unmatched try-catch in a computation expression. But why?
-                    // Because this isn't a real .NET exception filter/handler but just a function we're passing
+                    let findMethInfo ty isInstance name (sigTys: TType list) =
+                        TryFindIntrinsicMethInfo infoReader matchm (AccessorDomain.AccessibleFromEverywhere) name ty
+                        |> List.tryFind (fun methInfo ->
+                            methInfo.IsInstance = isInstance &&
+                            (
+                                match methInfo.GetParamTypes(amap, matchm, []) with
+                                | [] -> false
+                                | argTysList ->
+                                    let argTys = (argTysList |> List.reduce (@)) @ [ methInfo.GetFSharpReturnTy (amap, matchm, []) ]
+                                    if argTys.Length <> sigTys.Length then
+                                        false
+                                    else
+                                        (argTys, sigTys)
+                                        ||> List.forall2 (typeEquiv g)
+                            )
+                        )
+
+                    // We use throw, or EDI.Capture(exn).Throw() when EDI is supported, instead of rethrow on unmatched try-with in a computation expression.
+                    // But why? Because this isn't a real .NET exception filter/handler but just a function we're passing
                     // to a computation expression builder to simulate one.
-                    mkThrow matchm resultTy (exprForVal matchm origInputVal)
+                    let ediCaptureMethInfo, ediThrowMethInfo =
+                        // EDI.Capture: exn -> EDI
+                        g.system_ExceptionDispatchInfo_ty
+                        |> Option.bind (fun ty -> findMethInfo ty false "Capture" [ g.exn_ty; ty ]),
+                        // edi.Throw: unit -> unit
+                        g.system_ExceptionDispatchInfo_ty
+                        |> Option.bind (fun ty -> findMethInfo ty true "Throw" [ g.unit_ty ])
+
+                    match Option.map2 (fun x y -> x,y) ediCaptureMethInfo ediThrowMethInfo with
+                    | None ->
+                        mkThrow matchm resultTy (exprForVal matchm origInputVal)
+                    | Some (ediCaptureMethInfo, ediThrowMethInfo) ->
+                        let (edi, _) =
+                            BuildMethodCall tcVal g amap NeverMutates matchm false
+                               ediCaptureMethInfo ValUseFlag.NormalValUse [] [] [ (exprForVal matchm origInputVal) ]
+
+                        let (e, _) =
+                            BuildMethodCall tcVal g amap NeverMutates matchm false
+                                ediThrowMethInfo ValUseFlag.NormalValUse [] [edi] [ ]
+
+                        mkCompGenSequential matchm e (mkDefault (matchm, resultTy))
 
                 | ThrowIncompleteMatchException ->
                     mkThrow matchm resultTy
@@ -1335,7 +1377,7 @@ let CompilePatternBasic
 let isPartialOrWhenClause (c: TypedMatchClause) = isPatternPartial c.Pattern || c.GuardExpr.IsSome
 
 
-let rec CompilePattern  g denv amap exprm matchm warnOnUnused actionOnFailure (origInputVal, origInputValTypars, origInputExprOpt) (clausesL: TypedMatchClause list) inputTy resultTy =
+let rec CompilePattern  g denv amap tcVal infoReader exprm matchm warnOnUnused actionOnFailure (origInputVal, origInputValTypars, origInputExprOpt) (clausesL: TypedMatchClause list) inputTy resultTy =
     match clausesL with
     | _ when List.exists isPartialOrWhenClause clausesL ->
         // Partial clauses cause major code explosion if treated naively
@@ -1345,13 +1387,13 @@ let rec CompilePattern  g denv amap exprm matchm warnOnUnused actionOnFailure (o
         let warnOnUnused = false // we can't turn this on since we're pretending all partials fail in order to control the complexity of this.
         let warnOnIncomplete = true
         let clausesPretendAllPartialFail = List.collect (fun (TClause(p, whenOpt, tg, m)) -> [TClause(erasePartialPatterns p, whenOpt, tg, m)]) clausesL
-        let _ = CompilePatternBasic g denv amap exprm matchm warnOnUnused warnOnIncomplete actionOnFailure (origInputVal, origInputValTypars, origInputExprOpt) clausesPretendAllPartialFail inputTy resultTy
+        let _ = CompilePatternBasic g denv amap tcVal infoReader exprm matchm warnOnUnused warnOnIncomplete actionOnFailure (origInputVal, origInputValTypars, origInputExprOpt) clausesPretendAllPartialFail inputTy resultTy
         let warnOnIncomplete = false
 
         let rec atMostOnePartialAtATime clauses =
             match List.takeUntil isPartialOrWhenClause clauses with
             | l, [] ->
-                CompilePatternBasic g denv amap exprm matchm warnOnUnused warnOnIncomplete actionOnFailure (origInputVal, origInputValTypars, origInputExprOpt) l inputTy resultTy
+                CompilePatternBasic g denv amap tcVal infoReader exprm matchm warnOnUnused warnOnIncomplete actionOnFailure (origInputVal, origInputValTypars, origInputExprOpt) l inputTy resultTy
             | l, (h :: t) ->
                 // Add the partial clause.
                 doGroupWithAtMostOnePartial (l @ [h]) t
@@ -1372,10 +1414,10 @@ let rec CompilePattern  g denv amap exprm matchm warnOnUnused actionOnFailure (o
             // Make the clause that represents the remaining cases of the pattern match
             let clauseForRestOfMatch = TClause(TPat_wild matchm, None, TTarget(List.empty, expr, spTarget), matchm)
 
-            CompilePatternBasic g denv amap exprm matchm warnOnUnused warnOnIncomplete actionOnFailure (origInputVal, origInputValTypars, origInputExprOpt) (group @ [clauseForRestOfMatch]) inputTy resultTy
+            CompilePatternBasic g denv amap tcVal infoReader exprm matchm warnOnUnused warnOnIncomplete actionOnFailure (origInputVal, origInputValTypars, origInputExprOpt) (group @ [clauseForRestOfMatch]) inputTy resultTy
 
 
         atMostOnePartialAtATime clausesL
 
     | _ ->
-        CompilePatternBasic g denv amap exprm matchm warnOnUnused true actionOnFailure (origInputVal, origInputValTypars, origInputExprOpt) clausesL inputTy resultTy
+        CompilePatternBasic g denv amap tcVal infoReader exprm matchm warnOnUnused true actionOnFailure (origInputVal, origInputValTypars, origInputExprOpt) clausesL inputTy resultTy

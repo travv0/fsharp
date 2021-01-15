@@ -4,17 +4,17 @@ module public rec FSharp.Compiler.SyntaxTree
 
 open System.Diagnostics
 
-open FSharp.Compiler.AbstractIL.IL
 open FSharp.Compiler.AbstractIL.Internal.Library
-open FSharp.Compiler.Range
+open FSharp.Compiler.Text
+open FSharp.Compiler.Text.Range
 open FSharp.Compiler.XmlDoc
 
 /// Represents an identifier in F# code
 [<Struct; NoEquality; NoComparison; DebuggerDisplay("{idText}")>]
 type Ident (text: string, range: range) =
-     member x.idText = text
-     member x.idRange = range
-     override x.ToString() = text
+     member _.idText = text
+     member _.idRange = range
+     override _.ToString() = text
 
 /// Represents a long identifier e.g. 'A.B.C'
 type LongIdent = Ident list
@@ -173,16 +173,16 @@ type SynMeasure =
     | Named of longId: LongIdent * range: range
 
     /// A product of two units of measure, e.g. 'kg * m'
-    | Product of SynMeasure * SynMeasure * range: range
+    | Product of measure1: SynMeasure * measure2: SynMeasure * range: range
 
     /// A sequence of several units of measure, e.g. 'kg m m'
-    | Seq of SynMeasure list * range: range
+    | Seq of measures: SynMeasure list * range: range
 
     /// A division of two units of measure, e.g. 'kg / m'
-    | Divide of SynMeasure * SynMeasure * range: range
+    | Divide of measure1: SynMeasure * measure2: SynMeasure * range: range
 
     /// A power of a unit of measure, e.g. 'kg ^ 2'
-    | Power of SynMeasure * SynRationalConst * range: range
+    | Power of measure: SynMeasure * power: SynRationalConst * range: range
 
     /// The '1' unit of measure
     | One
@@ -191,15 +191,15 @@ type SynMeasure =
     | Anon of range: range
 
     /// A variable unit of measure
-    | Var of SynTypar * range: range
+    | Var of typar: SynTypar * range: range
 
 /// Represents an unchecked syntax tree of F# unit of measure exponents.
 [<NoEquality; NoComparison; RequireQualifiedAccess>]
 type SynRationalConst =
    
-    | Integer of int32
+    | Integer of value: int32
 
-    | Rational of int32 * int32 * range: range
+    | Rational of numerator: int32 * denominator: int32 * range: range
 
     | Negate of SynRationalConst
 
@@ -520,7 +520,11 @@ type SynType =
        value: SynType *
        range: range
 
-    /// Gets the syntax range of this constuct
+    | Paren of
+      innerType: SynType *
+      range: range
+
+    /// Gets the syntax range of this construct
     member x.Range =
         match x with
         | SynType.App (range=m)
@@ -537,7 +541,8 @@ type SynType =
         | SynType.StaticConstantNamed (range=m)
         | SynType.HashConstraint (range=m)
         | SynType.MeasureDivide (range=m)
-        | SynType.MeasurePower (range=m) -> m
+        | SynType.MeasurePower (range=m)
+        | SynType.Paren (range=m) -> m
         | SynType.LongIdent lidwd -> lidwd.Range
 
 /// Represents a syntax tree for F# expressions
@@ -592,7 +597,7 @@ type SynExpr =
 
     /// F# syntax: [ e1; ...; en ], [| e1; ...; en |]
     | ArrayOrList of
-        isList: bool *
+        isArray: bool *
         exprs: SynExpr list *
         range: range
 
@@ -665,6 +670,8 @@ type SynExpr =
 
     /// First bool indicates if lambda originates from a method. Patterns here are always "simple"
     /// Second bool indicates if this is a "later" part of an iterated sequence of lambdas
+    /// parsedData keeps original parsed patterns and expression,
+    /// prior to transforming to "simple" patterns and iterated lambdas 
     ///
     /// F# syntax: fun pat -> expr
     | Lambda of
@@ -672,6 +679,7 @@ type SynExpr =
         inLambdaSeq: bool *
         args: SynSimplePats *
         body: SynExpr *
+        parsedData: (SynPat list * SynExpr) option *
         range: range
 
     /// F# syntax: function pat1 -> expr | ... | patN -> exprN
@@ -960,7 +968,7 @@ type SynExpr =
 
     /// Only used in FSharp.Core
     | LibraryOnlyILAssembly of
-        ilCode: ILInstr array *
+        ilCode: obj * // this type is ILInstr[]  but is hidden to avoid the representation of AbstractIL being public
         typeArgs: SynType list *
         args: SynExpr list *
         retTy: SynType list *
@@ -1006,6 +1014,12 @@ type SynExpr =
     /// 'use x = fixed expr'
     | Fixed of
         expr: SynExpr *
+        range: range
+
+    /// F# syntax: interpolated string, e.g. "abc{x}" or "abc{x,3}" or "abc{x:N4}"
+    /// Note the string ranges include the quotes, verbatim markers, dollar sign and braces
+    | InterpolatedString of
+        contents: SynInterpolatedStringPart list *
         range: range
 
     /// Gets the syntax range of this construct
@@ -1074,7 +1088,8 @@ type SynExpr =
         | SynExpr.LetOrUseBang (range=m)
         | SynExpr.MatchBang (range=m)
         | SynExpr.DoBang (range=m)
-        | SynExpr.Fixed (range=m) -> m
+        | SynExpr.Fixed (range=m) 
+        | SynExpr.InterpolatedString (range=m) -> m
         | SynExpr.Ident id -> id.idRange
 
     /// Get the Range ignoring any (parse error) extra trailing dots
@@ -1110,6 +1125,11 @@ type SynExpr =
         match this with
         | SynExpr.ArbitraryAfterError _ -> true
         | _ -> false
+
+[<NoEquality; NoComparison; RequireQualifiedAccess>]
+type SynInterpolatedStringPart =
+    | String of value: string * range: range
+    | FillExpr of fillExpr: SynExpr * qualifiers: Ident option
 
 /// Represents a syntax tree for an F# indexer expression argument
 [<NoEquality; NoComparison; RequireQualifiedAccess>]
@@ -1358,7 +1378,7 @@ type SynPat =
 /// Represents a set of bindings that implement an interface
 [<NoEquality; NoComparison>]
 type SynInterfaceImpl =
-    | InterfaceImpl of SynType * SynBinding list * range: range
+    | InterfaceImpl of interfaceTy: SynType * bindings: SynBinding list * range: range
 
 /// Represents a clause in a 'match' expression
 [<NoEquality; NoComparison>]
@@ -1420,7 +1440,12 @@ type SynAttributes = SynAttributeList list
 /// Represents extra information about the declaration of a value
 [<NoEquality; NoComparison>]
 type SynValData =
-    | SynValData of MemberFlags option * SynValInfo * Ident option
+    | SynValData of
+        memberFlags: MemberFlags option *
+        valInfo: SynValInfo *
+        thisIdOpt: Ident option
+
+    member x.SynValInfo = (let (SynValData(_flags, synValInfo, _)) = x in synValInfo)
 
 /// Represents a binding for a 'let' or 'member' declaration
 [<NoEquality; NoComparison>]
@@ -1544,7 +1569,7 @@ type SynTypeDefnKind =
     | TyconHiddenRepr
     | TyconAugmentation
     | TyconILAssemblyCode
-    | TyconDelegate of SynType * SynValInfo
+    | TyconDelegate of signature: SynType * signatureInfo: SynValInfo
 
 /// Represents the syntax tree for the core of a simple type definition, in either signature
 /// or implementation.
@@ -1584,7 +1609,7 @@ type SynTypeDefnSimpleRepr =
     ///
     /// F# syntax: "type X = (# "..."#)
     | LibraryOnlyILAssembly of
-        ilType: ILType *
+        ilType: obj * // this type is ILType but is hidden to avoid the representation of AbstractIL being public
         range: range
 
     /// A type abbreviation, "type X = A.B.C"
@@ -1619,8 +1644,9 @@ type SynEnumCase =
 
     | EnumCase of
         attributes: SynAttributes *
-        ident: Ident * SynConst *
-        xmldoc: PreXmlDoc *
+        ident: Ident * 
+        value: SynConst *
+        xmlDoc: PreXmlDoc *
         range: range
 
     /// Gets the syntax range of this construct
@@ -1654,7 +1680,7 @@ type SynUnionCaseType =
     | UnionCaseFields of cases: SynField list
 
     /// Full type spec given by 'UnionCase: ty1 * tyN -> rty'. Only used in FSharp.Core, otherwise a warning.
-    | UnionCaseFullType of SynType * SynValInfo
+    | UnionCaseFullType of fullType: SynType * fullTypeInfo: SynValInfo
 
 /// Represents the syntax tree for the right-hand-side of a type definition in a signature.
 /// Note: in practice, using a discriminated union to make a distinction between
@@ -1687,7 +1713,11 @@ type SynTypeDefnSigRepr =
 type SynTypeDefnSig =
 
     /// The information for a type definition in a signature
-    | TypeDefnSig of SynComponentInfo * SynTypeDefnSigRepr * SynMemberSig list * range: range
+    | TypeDefnSig of
+        typeInfo: SynComponentInfo *
+        typeRepr: SynTypeDefnSigRepr *
+        members: SynMemberSig list *
+        range: range
 
 /// Represents the syntax tree for a field declaration in a record or class
 [<NoEquality; NoComparison>]
@@ -1752,9 +1782,16 @@ type SynValSig =
 type SynValInfo =
 
     /// SynValInfo(curriedArgInfos, returnInfo)
-    | SynValInfo of SynArgInfo list list * SynArgInfo
+    | SynValInfo of curriedArgInfos: SynArgInfo list list * returnInfo: SynArgInfo
 
-    member x.ArgInfos = (let (SynValInfo(args, _)) = x in args)
+    member x.CurriedArgInfos = (let (SynValInfo(args, _)) = x in args)
+
+    member x.ArgNames =
+        x.CurriedArgInfos 
+        |> List.concat 
+        |> List.map (fun info -> info.Ident) 
+        |> List.choose id 
+        |> List.map (fun id -> id.idText)
 
 /// Represents the argument names and other metadata for a parameter for a member or function
 [<NoEquality; NoComparison>]
@@ -1764,6 +1801,8 @@ type SynArgInfo =
         attributes: SynAttributes *
         optional: bool *
         ident: Ident option
+
+    member x.Ident : Ident option = let (SynArgInfo(_,_,id)) = x in id
 
 /// Represents the names and other metadata for the type parameters for a member or function
 [<NoEquality; NoComparison>]
@@ -1856,7 +1895,7 @@ type SynMemberDefn =
 
     /// An 'open' definition within a type
     | Open of
-        longId: LongIdent *
+        target: SynOpenDeclTarget *
         range: range
 
     /// A 'member' definition within a type
@@ -1870,6 +1909,7 @@ type SynMemberDefn =
         attributes: SynAttributes *
         ctorArgs: SynSimplePats *
         selfIdentifier: Ident option *
+        xmlDoc: PreXmlDoc *
         range: range
 
     /// An implicit inherit definition, 'inherit <typ>(args...) as base'
@@ -1988,7 +2028,7 @@ type SynModuleDecl =
 
     /// An 'open' definition within a module
     | Open of
-        longDotId: LongIdentWithDots *
+        target: SynOpenDeclTarget *
         range: range
 
     /// An attribute definition within a module, for assembly and .NET module attributes
@@ -2018,6 +2058,22 @@ type SynModuleDecl =
         | SynModuleDecl.HashDirective (range=m)
         | SynModuleDecl.NamespaceFragment (SynModuleOrNamespace (range=m))
         | SynModuleDecl.Attributes (range=m) -> m
+
+/// Represents the target of the open declaration
+[<NoEquality; NoComparison; RequireQualifiedAccess>]
+type SynOpenDeclTarget = 
+
+    /// A 'open' declaration
+    | ModuleOrNamespace of longId: LongIdent * range: range
+
+    /// A 'open type' declaration
+    | Type of typeName: SynType * range: range
+
+    /// Gets the syntax range of this construct
+    member this.Range =
+        match this with
+        | ModuleOrNamespace (range=m) -> m
+        | Type (range=m) -> m
 
 /// Represents the right hand side of an exception definition in a signature file
 [<NoEquality; NoComparison>]
@@ -2061,7 +2117,7 @@ type SynModuleSigDecl =
 
     /// An 'open' definition within a module or namespace in a signature file
     | Open of
-        longId: LongIdent *
+        target: SynOpenDeclTarget *
         range: range
 
     /// A hash directive within a module or namespace in a signature file

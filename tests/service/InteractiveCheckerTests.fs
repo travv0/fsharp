@@ -11,10 +11,10 @@ module FSharp.Compiler.Service.Tests.InteractiveChecker
 open NUnit.Framework
 open FsUnit
 open System
-open FSharp.Compiler
-open FSharp.Compiler.Range
 open FSharp.Compiler.Service.Tests.Common
 open FSharp.Compiler.SyntaxTree
+open FSharp.Compiler.Text
+open FSharp.Compiler.Text.Range
 
 let internal longIdentToString (longIdent: LongIdent) =
     String.Join(".", longIdent |> List.map (fun ident -> ident.ToString()))
@@ -42,7 +42,8 @@ let internal identsAndRanges (input: ParsedInput) =
         | SynModuleDecl.Let(_, _, _) -> failwith "Not implemented yet"
         | SynModuleDecl.DoExpr(_, _, _range) -> failwith "Not implemented yet"
         | SynModuleDecl.Exception(_, _range) -> failwith "Not implemented yet"
-        | SynModuleDecl.Open(longIdentWithDots, range) -> [ identAndRange (longIdentWithDotsToString longIdentWithDots) range ]
+        | SynModuleDecl.Open(SynOpenDeclTarget.ModuleOrNamespace (lid, range), _) -> [ identAndRange (longIdentToString lid) range ]
+        | SynModuleDecl.Open(SynOpenDeclTarget.Type _, _) -> failwith "Not implemented yet"
         | SynModuleDecl.Attributes(_attrs, _range) -> failwith "Not implemented yet"
         | SynModuleDecl.HashDirective(_, _range) -> failwith "Not implemented yet"
         | SynModuleDecl.NamespaceFragment(moduleOrNamespace) -> extractFromModuleOrNamespace moduleOrNamespace

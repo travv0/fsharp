@@ -1,13 +1,15 @@
 // Copyright (c) Microsoft Corporation.  All Rights Reserved.  See License.txt in the project root for license information.
 
-module public FSharp.Compiler.ParseHelpers
+module FSharp.Compiler.ParseHelpers
 
 open System
 open System.Globalization
 open FSharp.Compiler.AbstractIL
 open FSharp.Compiler.ErrorLogger
 open FSharp.Compiler.Features
-open FSharp.Compiler.Range
+open FSharp.Compiler.Text
+open FSharp.Compiler.Text.Pos
+open FSharp.Compiler.Text.Range
 open FSharp.Compiler.SyntaxTreeOps
 open FSharp.Compiler.UnicodeLexing
 open FSharp.Compiler.XmlDoc
@@ -25,40 +27,48 @@ open Internal.Utilities.Text.Parsing
 [<NoEquality; NoComparison>]
 exception SyntaxError of obj (* ParseErrorContext<_> *) * range: range
 
+exception IndentationProblem of string * range
+
+let warningStringOfCoords line column =
+    sprintf "(%d:%d)" line (column + 1)
+
+let warningStringOfPos (p: pos) =
+    warningStringOfCoords p.Line p.Column
+
 //------------------------------------------------------------------------
 // Parsing: getting positions from the lexer
 //------------------------------------------------------------------------
 
 /// Get an F# compiler position from a lexer position
-let internal posOfLexPosition (p: Position) =
+let posOfLexPosition (p: Position) =
     mkPos p.Line p.Column
 
 /// Get an F# compiler range from a lexer range
-let internal mkSynRange (p1: Position) (p2: Position) =
+let mkSynRange (p1: Position) (p2: Position) =
     mkFileIndexRange p1.FileIndex (posOfLexPosition p1) (posOfLexPosition p2)
 
 type LexBuffer<'Char> with
-    member internal lexbuf.LexemeRange  = mkSynRange lexbuf.StartPos lexbuf.EndPos
+    member lexbuf.LexemeRange  = mkSynRange lexbuf.StartPos lexbuf.EndPos
 
 /// Get the range corresponding to the result of a grammar rule while it is being reduced
-let internal lhs (parseState: IParseState) =
+let lhs (parseState: IParseState) =
     let p1 = parseState.ResultStartPosition
     let p2 = parseState.ResultEndPosition
     mkSynRange p1 p2
 
 /// Get the range covering two of the r.h.s. symbols of a grammar rule while it is being reduced
-let internal rhs2 (parseState: IParseState) i j =
+let rhs2 (parseState: IParseState) i j =
     let p1 = parseState.InputStartPosition i
     let p2 = parseState.InputEndPosition j
     mkSynRange p1 p2
 
 /// Get the range corresponding to one of the r.h.s. symbols of a grammar rule while it is being reduced
-let internal rhs parseState i = rhs2 parseState i i
+let rhs parseState i = rhs2 parseState i i
 
 type IParseState with
 
     /// Get the generator used for compiler-generated argument names.
-    member internal x.SynArgNameGenerator =
+    member x.SynArgNameGenerator =
         let key = "SynArgNameGenerator"
         let bls = x.LexBuffer.BufferLocalStore
         let gen =
@@ -71,7 +81,7 @@ type IParseState with
         gen :?> SynArgNameGenerator
 
     /// Reset the generator used for compiler-generated argument names.
-    member internal x.ResetSynArgNameGenerator() = x.SynArgNameGenerator.Reset()
+    member x.ResetSynArgNameGenerator() = x.SynArgNameGenerator.Reset()
 
 //------------------------------------------------------------------------
 // Parsing: grabbing XmlDoc
@@ -83,11 +93,11 @@ module LexbufLocalXmlDocStore =
     // The key into the BufferLocalStore used to hold the current accumulated XmlDoc lines
     let private xmlDocKey = "XmlDoc"
 
-    let internal ClearXmlDoc (lexbuf: Lexbuf) =
+    let ClearXmlDoc (lexbuf: Lexbuf) =
         lexbuf.BufferLocalStore.[xmlDocKey] <- box (XmlDocCollector())
 
     /// Called from the lexer to save a single line of XML doc comment.
-    let internal SaveXmlDocLine (lexbuf: Lexbuf, lineText, pos) =
+    let SaveXmlDocLine (lexbuf: Lexbuf, lineText, range: range) =
         let collector =
             match lexbuf.BufferLocalStore.TryGetValue xmlDocKey with
             | true, collector -> collector
@@ -96,11 +106,11 @@ module LexbufLocalXmlDocStore =
                 lexbuf.BufferLocalStore.[xmlDocKey] <- collector
                 collector
         let collector = unbox<XmlDocCollector>(collector)
-        collector.AddXmlDocLine(lineText, pos)
+        collector.AddXmlDocLine(lineText, range)
 
     /// Called from the parser each time we parse a construct that marks the end of an XML doc comment range,
     /// e.g. a 'type' declaration. The markerRange is the range of the keyword that delimits the construct.
-    let internal GrabXmlDocBeforeMarker (lexbuf: Lexbuf, markerRange: range)  =
+    let GrabXmlDocBeforeMarker (lexbuf: Lexbuf, markerRange: range)  =
         match lexbuf.BufferLocalStore.TryGetValue xmlDocKey with
         | true, collector ->
             let collector = unbox<XmlDocCollector>(collector)
@@ -118,6 +128,7 @@ type LexerIfdefStackEntry =
     | IfDefIf
     | IfDefElse
 
+/// Represents the active #if/#else blocks
 type LexerIfdefStackEntries = (LexerIfdefStackEntry * range) list
 
 type LexerIfdefStack = LexerIfdefStackEntries
@@ -126,12 +137,8 @@ type LexerIfdefStack = LexerIfdefStackEntries
 /// it reaches end of line or eof. The options are to continue with 'token' function
 /// or to continue with 'skip' function.
 type LexerEndlineContinuation =
-    | Token of LexerIfdefStackEntries
-    | Skip of LexerIfdefStackEntries * int * range: range
-    member x.LexerIfdefStack =
-      match x with
-      | LexerEndlineContinuation.Token ifd
-      | LexerEndlineContinuation.Skip(ifd, _, _) -> ifd
+    | Token 
+    | Skip of int * range: range
 
 type LexerIfdefExpression =
     | IfdefAnd of LexerIfdefExpression*LexerIfdefExpression
@@ -149,48 +156,73 @@ let rec LexerIfdefEval (lookup: string -> bool) = function
 // Parsing: continuations for whitespace tokens
 //------------------------------------------------------------------------
 
+[<RequireQualifiedAccess>]
+type LexerStringStyle =
+    | Verbatim
+    | TripleQuote
+    | SingleQuote
+
+[<RequireQualifiedAccess; Struct>]
+type LexerStringKind =
+    { IsByteString: bool
+      IsInterpolated: bool
+      IsInterpolatedFirst: bool }
+    static member String = { IsByteString = false; IsInterpolated = false; IsInterpolatedFirst=false }
+    static member ByteString = { IsByteString = true; IsInterpolated = false; IsInterpolatedFirst=false }
+    static member InterpolatedStringFirst = { IsByteString = false; IsInterpolated = true; IsInterpolatedFirst=true }
+    static member InterpolatedStringPart = { IsByteString = false; IsInterpolated = true; IsInterpolatedFirst=false }
+
+/// Represents the degree of nesting of '{..}' and the style of the string to continue afterwards, in an interpolation fill.
+/// Nesting counters and styles of outer interpolating strings are pushed on this stack.
+type LexerInterpolatedStringNesting = (int * LexerStringStyle * range) list
+
 /// The parser defines a number of tokens for whitespace and
 /// comments eliminated by the lexer.  These carry a specification of
 /// a continuation for the lexer for continued processing after we've dealt with
 /// the whitespace.
 [<RequireQualifiedAccess>]
 [<NoComparison; NoEquality>]
-type LexerWhitespaceContinuation =
-    | Token of ifdef: LexerIfdefStackEntries
-    | IfDefSkip of ifdef: LexerIfdefStackEntries * int * range: range
-    | String of ifdef: LexerIfdefStackEntries * range: range
-    | VerbatimString of ifdef: LexerIfdefStackEntries * range: range
-    | TripleQuoteString of ifdef: LexerIfdefStackEntries * range: range
-    | Comment of ifdef: LexerIfdefStackEntries * int * range: range
-    | SingleLineComment of ifdef: LexerIfdefStackEntries * int * range: range
-    | StringInComment of ifdef: LexerIfdefStackEntries * int * range: range
-    | VerbatimStringInComment of ifdef: LexerIfdefStackEntries * int * range: range
-    | TripleQuoteStringInComment of ifdef: LexerIfdefStackEntries * int * range: range
-    | MLOnly of ifdef: LexerIfdefStackEntries * range: range
-    | EndLine of LexerEndlineContinuation
+type LexerContinuation =
+    | Token of ifdef: LexerIfdefStackEntries * nesting: LexerInterpolatedStringNesting
+    | IfDefSkip of ifdef: LexerIfdefStackEntries * nesting: LexerInterpolatedStringNesting * int * range: range
+    | String of ifdef: LexerIfdefStackEntries * nesting: LexerInterpolatedStringNesting * style: LexerStringStyle * kind: LexerStringKind * range: range
+    | Comment of ifdef: LexerIfdefStackEntries * nesting: LexerInterpolatedStringNesting * int * range: range
+    | SingleLineComment of ifdef: LexerIfdefStackEntries * nesting: LexerInterpolatedStringNesting * int * range: range
+    | StringInComment of ifdef: LexerIfdefStackEntries * nesting: LexerInterpolatedStringNesting * style: LexerStringStyle * int * range: range
+    | MLOnly of ifdef: LexerIfdefStackEntries * nesting: LexerInterpolatedStringNesting * range: range
+    | EndLine of ifdef: LexerIfdefStackEntries * nesting: LexerInterpolatedStringNesting * LexerEndlineContinuation
+
+    static member Default = LexCont.Token([],[])
 
     member x.LexerIfdefStack =
         match x with
         | LexCont.Token (ifdef=ifd)
         | LexCont.IfDefSkip (ifdef=ifd)
         | LexCont.String (ifdef=ifd)
-        | LexCont.VerbatimString (ifdef=ifd)
         | LexCont.Comment (ifdef=ifd)
         | LexCont.SingleLineComment (ifdef=ifd)
-        | LexCont.TripleQuoteString (ifdef=ifd)
         | LexCont.StringInComment (ifdef=ifd)
-        | LexCont.VerbatimStringInComment (ifdef=ifd)
-        | LexCont.TripleQuoteStringInComment (ifdef=ifd)
+        | LexCont.EndLine (ifdef=ifd)
         | LexCont.MLOnly (ifdef=ifd) -> ifd
-        | LexCont.EndLine endl -> endl.LexerIfdefStack
 
-and LexCont = LexerWhitespaceContinuation
+    member x.LexerInterpStringNesting =
+        match x with
+        | LexCont.Token (nesting=nesting)
+        | LexCont.IfDefSkip (nesting=nesting)
+        | LexCont.String (nesting=nesting)
+        | LexCont.Comment (nesting=nesting)
+        | LexCont.SingleLineComment (nesting=nesting)
+        | LexCont.StringInComment (nesting=nesting)
+        | LexCont.EndLine (nesting=nesting)
+        | LexCont.MLOnly (nesting=nesting) -> nesting
+
+and LexCont = LexerContinuation
 
 //------------------------------------------------------------------------
 // Parse IL assembly code
 //------------------------------------------------------------------------
 
-let internal internalParseAssemblyCodeInstructions s isFeatureSupported m =
+let ParseAssemblyCodeInstructions s (isFeatureSupported: LanguageFeature -> bool) m : IL.ILInstr[] = 
 #if NO_INLINE_IL_PARSER
     ignore s
     ignore isFeatureSupported
@@ -206,12 +238,7 @@ let internal internalParseAssemblyCodeInstructions s isFeatureSupported m =
       errorR(Error(FSComp.SR.astParseEmbeddedILError(), m)); [||]
 #endif
 
-let ParseAssemblyCodeInstructions s m =
-    // Public API can not answer the isFeatureSupported questions, so here we support everything
-    let isFeatureSupported (_featureId:LanguageFeature) = true
-    internalParseAssemblyCodeInstructions s isFeatureSupported m
-
-let internal internalParseAssemblyCodeType s isFeatureSupported m =
+let ParseAssemblyCodeType s (isFeatureSupported: Features.LanguageFeature -> bool) m =
     ignore s
     ignore isFeatureSupported
 
@@ -229,12 +256,6 @@ let internal internalParseAssemblyCodeType s isFeatureSupported m =
       IL.EcmaMscorlibILGlobals.typ_Object
 #endif
 
-/// Helper for parsing the inline IL fragments.
-let ParseAssemblyCodeType s m =
-    // Public API can not answer the isFeatureSupported questions, so here we support everything
-    let isFeatureSupported (_featureId:LanguageFeature) = true
-    internalParseAssemblyCodeType s isFeatureSupported m
-
 //--------------------------
 // Integer parsing
 
@@ -242,6 +263,19 @@ let ParseAssemblyCodeType s m =
 // the parser tables, no doubt). So this is an optimized
 // version of the F# core library parsing code with the call to "Trim"
 // removed, which appears in profiling runs as a small but significant cost.
+
+module Ranges =
+    /// Whether valid as signed int8 when a minus sign is prepended, compares true to 0x80
+    let isInt8BadMax x = 1 <<< 7 = x
+
+    /// Whether valid as signed int16 when a minus sign is prepended, compares true to 0x8000
+    let isInt16BadMax x = 1 <<< 15 = x
+
+    /// Whether valid as signed int32 when a minus sign is prepended, compares as string against "2147483648".
+    let isInt32BadMax = let max = string(1UL <<< 31) in fun s -> max = s
+
+    /// Whether valid as signed int64 when a minus sign is prepended, compares as string against "9223372036854775808".
+    let isInt64BadMax = let max = string(1UL <<< 63) in fun s -> max = s
 
 let getSign32 (s:string) (p:byref<int>) l = 
     if (l >= p + 1 && s.[p] = '-') then
@@ -285,8 +319,8 @@ let parseSmallInt (errorLogger: ErrorLogger) m (s: string) =
 
 let parseInt32AllowMaxIntPlusOne (errorLogger: ErrorLogger) m s =
     // Allow <max_int+1> to parse as min_int.  Allowed only because we parse '-' as an operator. 
-    if s = "2147483648" then 
-        (-2147483648,true) 
+    if Ranges.isInt32BadMax s then 
+        (Int32.MinValue,true) 
     else
         let n = 
             try int32 s 
@@ -306,7 +340,7 @@ let parseUInt32 (errorLogger: ErrorLogger) m (s: string) =
         with _ ->  
              errorLogger.ErrorR(Error(FSComp.SR.lexOutsideThirtyTwoBitUnsigned(), m))
              0L
-    if n > 0xFFFFFFFFL || n < 0L then 
+    if n > UInt32.MaxValue || n < 0L then 
         errorLogger.ErrorR(Error(FSComp.SR.lexOutsideThirtyTwoBitUnsigned(), m))
         0u
     else
@@ -314,8 +348,8 @@ let parseUInt32 (errorLogger: ErrorLogger) m (s: string) =
 
 let parseInt64AllowMaxIntPlusOne (errorLogger: ErrorLogger) m s =
     // Allow <max_int+1> to parse as min_int.  Stupid but allowed because we parse '-' as an operator. 
-    if s = "9223372036854775808" then 
-        (-9223372036854775808L,true) 
+    if Ranges.isInt64BadMax s then 
+        (Int64.MinValue,true) 
     else
         try int64 s, false
         with _ ->  
@@ -348,10 +382,10 @@ let parseUNativeInt (errorLogger: ErrorLogger) m (s: string) =
         0UL
 
 let convSmallIntToSByteAllowMaxIntPlusOne (errorLogger: ErrorLogger) m n =
-    if n > 0x80 || n < -0x80 then
+    if n > int SByte.MaxValue || n < int SByte.MinValue then
         errorLogger.ErrorR(Error(FSComp.SR.lexOutsideEightBitSigned(),m))
         0y,false
-    elif n = 0x80 then (sbyte(-0x80), true (* 'true' = 'bad'*) )
+    elif Ranges.isInt8BadMax n then (sbyte(SByte.MinValue), true (* 'true' = 'bad'*) )
     else (sbyte n, false)
 
 let convSmallIntToSByte (errorLogger: ErrorLogger) m n =
@@ -360,10 +394,10 @@ let convSmallIntToSByte (errorLogger: ErrorLogger) m n =
     n
 
 let convSmallIntToInt16AllowMaxIntPlusOne (errorLogger: ErrorLogger) m n =
-    if n > 0x8000 || n < -0x8000 then
+    if n > int Int16.MaxValue || n < int Int16.MinValue then
         errorLogger.ErrorR(Error(FSComp.SR.lexOutsideSixteenBitSigned(),m))
         0s,false
-    elif n = 0x8000 then (-0x8000s, true (* 'true' = 'bad'*) )
+    elif n = Ranges.isInt16BadMax then (Int16.MinValue, true (* 'true' = 'bad'*) )
     else (int16 n, false)
 
 let convSmallIntToInt16 (errorLogger: ErrorLogger) m n =
@@ -372,14 +406,14 @@ let convSmallIntToInt16 (errorLogger: ErrorLogger) m n =
     n
 
 let convSmallIntToByte (errorLogger: ErrorLogger) m n =
-    if n > 0xFF || n < 0 then
+    if n > Byte.MaxValue || n < 0 then
         errorLogger.ErrorR(Error(FSComp.SR.lexOutsideEightBitUnsigned(), m))
         0uy
     else
         byte n
 
 let convSmallIntToUInt16 (errorLogger: ErrorLogger) m n =
-    if n > 0xFFFF || n < 0 then
+    if n > UInt16.MaxValue || n < 0 then
         errorLogger.ErrorR(Error(FSComp.SR.lexOutsideSixteenBitUnsigned(), m))
         0us
     else

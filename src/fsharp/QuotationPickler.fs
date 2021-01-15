@@ -9,20 +9,20 @@ open FSharp.Compiler.Lib
 
 let mkRLinear mk (vs, body) = List.foldBack (fun v acc -> mk (v, acc)) vs body 
 
-type TypeVarData = { tvName: string; }
+type TypeVarData = { tvName: string }
 
 type NamedTypeData = 
     | Idx of int
     | Named of (* tcName: *) string *  (* tcAssembly:  *) string 
 
 type TypeCombOp = 
-    | ArrayTyOp  of int (* rank *) 
+    | ArrayTyOp of int (* rank *) 
     | FunTyOp
     | NamedTyOp of NamedTypeData
 
 type TypeData =
-    | VarType   of int
-    | AppType   of TypeCombOp * TypeData list
+    | VarType of int
+    | AppType of TypeCombOp * TypeData list
 
 let mkVarTy v = VarType v 
 let mkFunTy (x1, x2) = AppType(FunTyOp, [x1; x2])  
@@ -51,35 +51,37 @@ type CombOp =
     | AppOp
     | CondOp  
     | ModuleValueOp of NamedTypeData * string * bool
+    | ModuleValueWOp of NamedTypeData * string * bool * string * int
     | LetRecOp  
     | LetRecCombOp  
     | LetOp  
-    | RecdMkOp  of NamedTypeData
-    | RecdGetOp  of NamedTypeData * string
-    | RecdSetOp  of NamedTypeData * string
-    | SumMkOp  of NamedTypeData * string
-    | SumFieldGetOp  of NamedTypeData * string * int
+    | RecdMkOp of NamedTypeData
+    | RecdGetOp of NamedTypeData * string
+    | RecdSetOp of NamedTypeData * string
+    | SumMkOp of NamedTypeData * string
+    | SumFieldGetOp of NamedTypeData * string * int
     | SumTagTestOp of NamedTypeData * string
     | TupleMkOp  
     | TupleGetOp of int
     | UnitOp   
-    | BoolOp   of bool   
+    | BoolOp of bool   
     | StringOp of string 
     | SingleOp of float32 
     | DoubleOp of float  
-    | CharOp   of char   
-    | SByteOp  of sbyte
-    | ByteOp   of byte   
-    | Int16Op  of int16  
+    | CharOp of char   
+    | SByteOp of sbyte
+    | ByteOp of byte   
+    | Int16Op of int16  
     | UInt16Op of uint16 
-    | Int32Op  of int32  
+    | Int32Op of int32  
     | UInt32Op of uint32 
-    | Int64Op  of int64  
+    | Int64Op of int64  
     | UInt64Op of uint64 
     | PropGetOp of PropInfoData
     | FieldGetOp of NamedTypeData * string
     | CtorCallOp of CtorData 
     | MethodCallOp of MethodData 
+    | MethodCallWOp of MethodData * MethodData * int
     | CoerceOp 
     | NewArrayOp
     | DelegateOp
@@ -89,7 +91,7 @@ type CombOp =
     | NullOp   
     | DefaultValueOp 
     | PropSetOp of PropInfoData
-    | FieldSetOp  of NamedTypeData * string
+    | FieldSetOp of NamedTypeData * string
     | AddressOfOp
     | ExprSetOp
     | AddressSetOp
@@ -99,14 +101,14 @@ type CombOp =
 
 /// Represents specifications of a subset of F# expressions 
 type ExprData =
-    | AttrExpr   of ExprData * ExprData list
-    | CombExpr   of CombOp * TypeData list * ExprData list
-    | VarExpr    of int
-    | QuoteExpr  of ExprData 
+    | AttrExpr of ExprData * ExprData list
+    | CombExpr of CombOp * TypeData list * ExprData list
+    | VarExpr of int
+    | QuoteExpr of ExprData 
     | LambdaExpr of VarData * ExprData
-    | HoleExpr   of TypeData * int
-    | ThisVarExpr  of TypeData 
-    | QuoteRawExpr  of ExprData 
+    | HoleExpr of TypeData * int
+    | ThisVarExpr of TypeData 
+    | QuoteRawExpr of ExprData 
   
 let mkVar v = VarExpr v 
 
@@ -122,8 +124,11 @@ let mkQuoteRaw40 (a) = QuoteRawExpr (a)
 
 let mkCond (x1, x2, x3)          = CombExpr(CondOp, [], [x1;x2;x3])  
 
-let mkModuleValueApp (tcref, nm, isProp, tyargs, args: ExprData list list) =
-    CombExpr(ModuleValueOp(tcref, nm, isProp), tyargs, List.concat args)
+let mkModuleValueApp (tcref, nm, isProp, tyargs, args: ExprData list) = 
+    CombExpr(ModuleValueOp(tcref, nm, isProp), tyargs, args)
+
+let mkModuleValueWApp (tcref, nm, isProp, nmW, nWitnesses, tyargs, args: ExprData list) = 
+    CombExpr(ModuleValueWOp(tcref, nm, isProp, nmW, nWitnesses), tyargs, args)
 
 let mkTuple (ty, x)             = CombExpr(TupleMkOp, [ty], x)
 
@@ -220,6 +225,8 @@ let mkFieldSet (d1, d2, tyargs, args) = CombExpr(FieldSetOp(d1, d2), tyargs, arg
 let mkCtorCall   (d, tyargs, args) = CombExpr(CtorCallOp(d), tyargs, args)
 
 let mkMethodCall (d, tyargs, args) = CombExpr(MethodCallOp(d), tyargs, args)
+
+let mkMethodCallW (d1, d2, d3, tyargs, args) = CombExpr(MethodCallWOp(d1, d2, d3), tyargs, args)
 
 let mkAttributedExpression(e, attr) = AttrExpr(e, [attr])
 
@@ -458,6 +465,18 @@ let p_CombOp x st =
     | TryFinallyOp     -> p_byte 47 st
     | TryWithOp        -> p_byte 48 st
     | ExprSetOp        -> p_byte 49 st
+    | MethodCallWOp (a, b, c) ->
+        p_byte 50 st
+        p_MethodData a st
+        p_MethodData b st
+        p_int c st
+    | ModuleValueWOp (x, y, z, nmW, nWitnesses) -> 
+        p_byte 51 st
+        p_string nmW st
+        p_int nWitnesses st
+        p_NamedType x st 
+        p_string y st 
+        p_bool z st
 
 let rec p_expr x st =
     match x with 
@@ -476,16 +495,23 @@ type ModuleDefnData =
       IsProperty: bool }
 
 type MethodBaseData = 
-    | ModuleDefn of ModuleDefnData
-    | Method     of MethodData
-    | Ctor       of CtorData
+    | ModuleDefn of ModuleDefnData * (string * int) option
+    | Method of MethodData
+    | Ctor of CtorData
 
 let pickle = pickle_obj p_expr
 
 let p_MethodBase x st = 
     match x with 
-    | ModuleDefn md -> 
+    | ModuleDefn (md, None) -> 
         p_byte 0 st
+        p_NamedType md.Module st
+        p_string md.Name st
+        p_bool md.IsProperty st
+    | ModuleDefn (md, Some (nmW, nWitnesses)) -> 
+        p_byte 3 st
+        p_string nmW st
+        p_int nWitnesses st
         p_NamedType md.Module st
         p_string md.Name st
         p_bool md.IsProperty st

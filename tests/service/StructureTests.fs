@@ -9,10 +9,10 @@ module Tests.Service.StructureTests
 
 open System.IO
 open NUnit.Framework
-open FSharp.Compiler.Range
 open FSharp.Compiler.SourceCodeServices
 open FSharp.Compiler.SourceCodeServices.Structure
 open FSharp.Compiler.Service.Tests.Common
+open FSharp.Compiler.Text
 open System.Text
 
 let fileName = Path.Combine (__SOURCE_DIRECTORY__, __SOURCE_FILE__)
@@ -226,13 +226,13 @@ open H
 open G             
 open H              
 """
-    => [ (2, 5, 3, 6), (2, 5, 3, 6)
+    => [ (2, 0, 3, 6), (2, 0, 3, 6)
          (5, 0, 19, 17), (5, 8, 19, 17)
-         (8, 9, 9, 10), (8, 9, 9, 10)
+         (8, 4, 9, 10), (8, 4, 9, 10)
          (11, 4, 14, 17), (11, 12, 14, 17)
          (16, 4, 19, 17), (16, 12, 19, 17)
-         (17, 13, 18, 14), (17, 13, 18, 14)
-         (21, 5, 26, 6), (21, 5, 26, 6) ]
+         (17, 8, 18, 14), (17, 8, 18, 14)
+         (21, 0, 26, 6), (21, 0, 26, 6) ]
 
 [<Test>]
 let ``hash directives``() =

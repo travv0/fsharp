@@ -7,6 +7,26 @@
         <target state="translated">symbol ..^</target>
         <note />
       </trans-unit>
+      <trans-unit id="Parser.TOKEN.INTERP.STRING.BEGIN.END">
+        <source>interpolated string</source>
+        <target state="translated">interpolovaný řetězec</target>
+        <note />
+      </trans-unit>
+      <trans-unit id="Parser.TOKEN.INTERP.STRING.BEGIN.PART">
+        <source>interpolated string (first part)</source>
+        <target state="translated">interpolovaný řetězec (první část)</target>
+        <note />
+      </trans-unit>
+      <trans-unit id="Parser.TOKEN.INTERP.STRING.END">
+        <source>interpolated string (final part)</source>
+        <target state="translated">interpolovaný řetězec (poslední část)</target>
+        <note />
+      </trans-unit>
+      <trans-unit id="Parser.TOKEN.INTERP.STRING.PART">
+        <source>interpolated string (part)</source>
+        <target state="translated">interpolovaný řetězec (část)</target>
+        <note />
+      </trans-unit>
       <trans-unit id="SeeAlso">
         <source>. See also {0}.</source>
         <target state="translated">. Viz taky {0}.</target>
@@ -69,7 +89,7 @@
       </trans-unit>
       <trans-unit id="UpperCaseIdentifierInPattern">
         <source>Uppercase variable identifiers should not generally be used in patterns, and may indicate a missing open declaration or a misspelt pattern name.</source>
-        <target state="needs-review-translation">Identifikátory proměnných psané velkými písmeny se ve vzorech obecně nedoporučují. Můžou označovat špatně napsaný název vzoru.</target>
+        <target state="translated">Identifikátory proměnných psané velkými písmeny se ve vzorech obecně nedoporučují. Můžou označovat chybějící otevřenou deklaraci nebo špatně napsaný název vzoru.</target>
         <note />
       </trans-unit>
       <trans-unit id="NotUpperCaseConstructor">
@@ -134,7 +154,7 @@
       </trans-unit>
       <trans-unit id="UndefinedName2">
         <source> A construct with this name was found in FSharp.PowerPack.dll, which contains some modules and types that were implicitly referenced in some previous versions of F#. You may need to add an explicit reference to this DLL in order to compile this code.</source>
-        <target state="translated">Konstruktor s tímto názvem se našel v knihovně FSharp.PowerPack.dll, která obsahuje určité moduly a typy implicitně odkazované v některých dřívějších verzích F#. Abyste tento kód mohli zkompilovat, bude možná potřeba přidat explicitní odkaz na tuto knihovnu DLL.</target>
+        <target state="translated"> Konstruktor s tímto názvem se našel v knihovně FSharp.PowerPack.dll, která obsahuje určité moduly a typy implicitně odkazované v některých dřívějších verzích F#. Abyste tento kód mohli zkompilovat, bude možná potřeba přidat explicitní odkaz na tuto knihovnu DLL.</target>
         <note />
       </trans-unit>
       <trans-unit id="FieldNotMutable">

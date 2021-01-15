@@ -6,15 +6,13 @@ namespace FSharp.Compiler
 
 #if !NO_EXTENSIONTYPING
 
-module internal ExtensionTyping =
+open System
+open System.Collections.Generic
+open FSharp.Core.CompilerServices
+open FSharp.Compiler.AbstractIL.IL
+open FSharp.Compiler.Text
 
-    open System
-    open System.IO
-    open System.Collections.Generic
-    open Microsoft.FSharp.Core.CompilerServices
-    open FSharp.Compiler.AbstractIL.IL
-    open FSharp.Compiler.AbstractIL.Internal.Library
-    open FSharp.Compiler.Range
+module internal ExtensionTyping =
 
     type TypeProviderDesignation = TypeProviderDesignation of string
 
@@ -46,16 +44,16 @@ module internal ExtensionTyping =
 
     /// Find and instantiate the set of ITypeProvider components for the given assembly reference
     val GetTypeProvidersOfAssembly : 
-          runtimeAssemblyFilename: string 
-          * ilScopeRefOfRuntimeAssembly:ILScopeRef
-          * designerAssemblyName: string 
-          * ResolutionEnvironment 
-          * bool
-          * isInteractive: bool
-          * systemRuntimeContainsType : (string -> bool)
-          * systemRuntimeAssemblyVersion : System.Version
-          * compilerToolsPath : string list
-          * range -> Tainted<ITypeProvider> list
+          runtimeAssemblyFilename: string  *
+          ilScopeRefOfRuntimeAssembly:ILScopeRef *
+          designTimeName: string *
+          resolutionEnvironment: ResolutionEnvironment *
+          isInvalidationSupported: bool *
+          isInteractive: bool *
+          systemRuntimeContainsType : (string -> bool) *
+          systemRuntimeAssemblyVersion : System.Version *
+          compilerToolPaths : string list * 
+          range -> Tainted<ITypeProvider> list
 
     /// Given an extension type resolver, supply a human-readable name suitable for error messages.
     val DisplayNameOfTypeProvider : Tainted<Microsoft.FSharp.Core.CompilerServices.ITypeProvider> * range -> string
@@ -74,20 +72,20 @@ module internal ExtensionTyping =
     [<Sealed>]
     type ProvidedTypeContext =
 
-        member TryGetILTypeRef : System.Type -> ILTypeRef option
+        member TryGetILTypeRef : ProvidedType -> ILTypeRef option
 
-        member TryGetTyconRef : System.Type -> obj option
+        member TryGetTyconRef : ProvidedType -> obj option
 
         static member Empty : ProvidedTypeContext 
 
-        static member Create : Dictionary<System.Type,ILTypeRef> * Dictionary<System.Type,obj (* TyconRef *) > -> ProvidedTypeContext 
+        static member Create : Dictionary<ProvidedType, ILTypeRef> * Dictionary<ProvidedType, obj (* TyconRef *) > -> ProvidedTypeContext 
 
-        member GetDictionaries : unit -> Dictionary<System.Type,ILTypeRef> * Dictionary<System.Type,obj (* TyconRef *) > 
+        member GetDictionaries : unit -> Dictionary<ProvidedType, ILTypeRef> * Dictionary<ProvidedType, obj (* TyconRef *) > 
 
         /// Map the TyconRef objects, if any
         member RemapTyconRefs : (obj -> obj) -> ProvidedTypeContext 
 
-    type [<AllowNullLiteral; Sealed; Class>] 
+    and [<AllowNullLiteral; Sealed; Class>] 
         ProvidedType =
         inherit ProvidedMemberInfo
         member IsSuppressRelocate : bool
@@ -296,7 +294,7 @@ module internal ExtensionTyping =
     val TryApplyProvidedType : typeBeforeArguments:Tainted<ProvidedType> * optGeneratedTypePath: string list option * staticArgs:obj[]  * range -> (Tainted<ProvidedType> * (unit -> unit)) option
 
     /// Try to apply a provided method to the given static arguments. 
-    val TryApplyProvidedMethod : methBeforeArguments:Tainted<ProvidedMethodBase> * staticArgs:obj[]  * range -> Tainted<ProvidedMethodBase> option
+    val TryApplyProvidedMethod : methBeforeArgs:Tainted<ProvidedMethodBase> * staticArgs:obj[]  * range -> Tainted<ProvidedMethodBase> option
 
     /// Try to resolve a type in the given extension type resolver
     val TryResolveProvidedType : Tainted<ITypeProvider> * range * string[] * typeName: string -> Tainted<ProvidedType> option
