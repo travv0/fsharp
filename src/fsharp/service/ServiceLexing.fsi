@@ -447,7 +447,7 @@ module public Lexer =
         | UInt8
         | Int64
         | Int32
-        | IntDotDot
+        | Int32DotDot
         | Int16
         | Int8
         | FunkyOperatorName

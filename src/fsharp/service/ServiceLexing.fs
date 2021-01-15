@@ -988,7 +988,7 @@ module Lexer =
         | UInt8
         | Int64
         | Int32
-        | IntDotDot
+        | Int32DotDot
         | Int16
         | Int8
         | FunkyOperatorName
@@ -1198,7 +1198,7 @@ module Lexer =
             | UINT8 _ -> FSharpSyntaxTokenKind.UInt8
             | INT64 _ -> FSharpSyntaxTokenKind.UInt64
             | INT32 _ -> FSharpSyntaxTokenKind.Int32
-            | INT32_DOT_DOT _ -> FSharpSyntaxTokenKind.IntDotDot
+            | INT32_DOT_DOT _ -> FSharpSyntaxTokenKind.Int32DotDot
             | INT16 _ -> FSharpSyntaxTokenKind.Int16
             | INT8 _ -> FSharpSyntaxTokenKind.Int8
             | FUNKY_OPERATOR_NAME _ -> FSharpSyntaxTokenKind.FunkyOperatorName
