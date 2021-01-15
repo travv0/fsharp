@@ -477,7 +477,7 @@ module internal Tokenizer =
 
             // Apply some hacks to clean up the token stream (we apply more later)
             match info with
-            | Some info when info.Tag = FSharpTokenTag.INT_DOT_DOT ->
+            | Some info when info.Tag = FSharpTokenTag.INT32_DOT_DOT ->
                     tokenInfoOption <- 
                         Some { LeftColumn = info.LeftColumn
                                RightColumn = info.RightColumn - 2

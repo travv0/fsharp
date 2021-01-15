@@ -58,7 +58,7 @@ module FSharpTokenTag =
     let DOT = tagOfToken DOT
     let DOT_DOT = tagOfToken DOT_DOT
     let DOT_DOT_HAT = tagOfToken DOT_DOT_HAT
-    let INT_DOT_DOT = tagOfToken (INT_DOT_DOT("0"))
+    let INT32_DOT_DOT = tagOfToken (INT32_DOT_DOT("0"))
     let UNDERSCORE = tagOfToken UNDERSCORE
     let BAR = tagOfToken BAR
     let COLON_GREATER = tagOfToken COLON_GREATER
@@ -188,7 +188,7 @@ module internal TokenClassifications =
         | UNATIVEINT _ | NATIVEINT _ | IEEE32 _ |  IEEE64 _ ->
             (FSharpTokenColorKind.Number, FSharpTokenCharKind.Literal, FSharpTokenTriggerClass.None)
 
-        | INT_DOT_DOT _ ->
+        | INT32_DOT_DOT _ ->
           // This will color the whole "1.." expression in a 'number' color
           // (this isn't entirely correct, but it'll work for now - see bug 3727)
             (FSharpTokenColorKind.Number, FSharpTokenCharKind.Operator, FSharpTokenTriggerClass.None)
@@ -1198,7 +1198,7 @@ module Lexer =
             | UINT8 _ -> FSharpSyntaxTokenKind.UInt8
             | INT64 _ -> FSharpSyntaxTokenKind.UInt64
             | INT32 _ -> FSharpSyntaxTokenKind.Int32
-            | INT_DOT_DOT _ -> FSharpSyntaxTokenKind.IntDotDot
+            | INT32_DOT_DOT _ -> FSharpSyntaxTokenKind.IntDotDot
             | INT16 _ -> FSharpSyntaxTokenKind.Int16
             | INT8 _ -> FSharpSyntaxTokenKind.Int8
             | FUNKY_OPERATOR_NAME _ -> FSharpSyntaxTokenKind.FunkyOperatorName

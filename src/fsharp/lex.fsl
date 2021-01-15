@@ -299,7 +299,7 @@ rule token args skip = parse
 
  | int '.' '.' 
      { let s = removeUnderscores (lexemeTrimRight lexbuf 2)
-       INT_DOT_DOT(s)
+       INT32_DOT_DOT(s)
      } 
 
  | xint 

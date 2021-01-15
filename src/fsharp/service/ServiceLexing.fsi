@@ -141,7 +141,7 @@ module FSharpTokenTag =
     /// Indicates the token is a `..`
     val DOT_DOT_HAT : int
     /// Indicates the token is a `..^`
-    val INT_DOT_DOT : int
+    val INT32_DOT_DOT : int
     /// Indicates the token is a `..`
     val UNDERSCORE : int
     /// Indicates the token is a `_`

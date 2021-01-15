@@ -175,7 +175,7 @@ let rangeOfLongIdent(lid:LongIdent) =
 %token <int16 * bool> INT16
 %token <int32 * bool> INT32 
 %token <int64 * bool> INT64
-%token <string> INT INT_DOT_DOT
+%token <string> INT INT32_DOT_DOT
 
 %token <byte> UINT8
 %token <uint16> UINT16
