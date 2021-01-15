@@ -4,6 +4,7 @@ module internal FSharp.Compiler.ParseHelpers
 
 open FSharp.Compiler.AbstractIL
 open FSharp.Compiler.AbstractIL.IL
+open FSharp.Compiler.ErrorLogger
 open FSharp.Compiler.Text
 open FSharp.Compiler.Text.Pos
 open FSharp.Compiler.Text.Range
@@ -106,3 +107,41 @@ and LexCont = LexerContinuation
 val ParseAssemblyCodeInstructions: s:string -> isFeatureSupported:(Features.LanguageFeature -> bool) -> m:range -> ILInstr[]
 
 val ParseAssemblyCodeType: s:string -> isFeatureSupported:(Features.LanguageFeature -> bool) -> m:range -> ILType
+
+val parseSmallInt: errorLogger: ErrorLogger -> m: range -> s: string -> int
+
+val parseInt32AllowMaxIntPlusOne: errorLogger: ErrorLogger -> m: range -> s: string -> int32 * bool
+
+val parseInt32: errorLogger: ErrorLogger -> m: range -> s: string -> int32
+
+val parseUInt32: errorLogger: ErrorLogger -> m: range -> s: string -> uint32
+
+val parseInt64AllowMaxIntPlusOne: errorLogger: ErrorLogger -> m: range -> s: string -> int64 * bool
+
+val parseInt64: errorLogger: ErrorLogger -> m: range -> s: string -> int64
+
+val parseUInt64: errorLogger: ErrorLogger -> m: range -> s: string -> uint64
+
+val parseNativeIntAllowMaxIntPlusOne: errorLogger: ErrorLogger -> m: range -> s: string -> int64 * bool
+
+val parseNativeInt: errorLogger: ErrorLogger -> m: range -> s: string -> int64
+
+val parseUNativeInt: errorLogger: ErrorLogger -> m: range -> s: string -> uint64
+
+val convSmallIntToSByteAllowMaxIntPlusOne: errorLogger: ErrorLogger -> m: range -> n: int -> sbyte * bool
+
+val convSmallIntToSByte: errorLogger: ErrorLogger -> m: range -> n: int -> sbyte
+
+val convSmallIntToInt16AllowMaxIntPlusOne: errorLogger: ErrorLogger -> m: range -> n: int -> int16 * bool
+
+val convSmallIntToInt16: errorLogger: ErrorLogger -> m: range -> n: int -> int16
+
+val convSmallIntToByte: errorLogger: ErrorLogger -> m: range -> n: int -> byte
+
+val convSmallIntToUInt16: errorLogger: ErrorLogger -> m: range -> n: int -> uint16
+
+val parseDouble: errorLogger: ErrorLogger -> m: range -> s: string -> double
+
+val parseSingle: errorLogger: ErrorLogger -> m: range -> s: string -> single
+
+val parseDecimal: errorLogger: ErrorLogger -> m: range -> s: string -> decimal

@@ -340,7 +340,7 @@ let parseUInt32 (errorLogger: ErrorLogger) m (s: string) =
         with _ ->  
              errorLogger.ErrorR(Error(FSComp.SR.lexOutsideThirtyTwoBitUnsigned(), m))
              0L
-    if n > UInt32.MaxValue || n < 0L then 
+    if n > int64 UInt32.MaxValue || n < 0L then 
         errorLogger.ErrorR(Error(FSComp.SR.lexOutsideThirtyTwoBitUnsigned(), m))
         0u
     else
@@ -366,6 +366,16 @@ let parseUInt64 (errorLogger: ErrorLogger) m (s: string) =
     with _ ->
         errorLogger.ErrorR(Error(FSComp.SR.lexOutsideSixtyFourBitUnsigned(), m))
         0UL
+
+let parseNativeIntAllowMaxIntPlusOne (errorLogger: ErrorLogger) m s =
+    // Allow <max_int+1> to parse as min_int.  Stupid but allowed because we parse '-' as an operator. 
+    if Ranges.isInt64BadMax s then 
+        (Int64.MinValue,true) 
+    else
+        try int64 s, false
+        with _ ->  
+            errorLogger.ErrorR(Error(FSComp.SR.lexOutsideNativeSigned(), m))
+            0L, false
 
 let parseNativeInt (errorLogger: ErrorLogger) m (s: string) =
     try 
@@ -397,7 +407,7 @@ let convSmallIntToInt16AllowMaxIntPlusOne (errorLogger: ErrorLogger) m n =
     if n > int Int16.MaxValue || n < int Int16.MinValue then
         errorLogger.ErrorR(Error(FSComp.SR.lexOutsideSixteenBitSigned(),m))
         0s,false
-    elif n = Ranges.isInt16BadMax then (Int16.MinValue, true (* 'true' = 'bad'*) )
+    elif Ranges.isInt16BadMax n then (Int16.MinValue, true (* 'true' = 'bad'*) )
     else (int16 n, false)
 
 let convSmallIntToInt16 (errorLogger: ErrorLogger) m n =
@@ -406,14 +416,14 @@ let convSmallIntToInt16 (errorLogger: ErrorLogger) m n =
     n
 
 let convSmallIntToByte (errorLogger: ErrorLogger) m n =
-    if n > Byte.MaxValue || n < 0 then
+    if n > int Byte.MaxValue || n < 0 then
         errorLogger.ErrorR(Error(FSComp.SR.lexOutsideEightBitUnsigned(), m))
         0uy
     else
         byte n
 
 let convSmallIntToUInt16 (errorLogger: ErrorLogger) m n =
-    if n > UInt16.MaxValue || n < 0 then
+    if n > int UInt16.MaxValue || n < 0 then
         errorLogger.ErrorR(Error(FSComp.SR.lexOutsideSixteenBitUnsigned(), m))
         0us
     else

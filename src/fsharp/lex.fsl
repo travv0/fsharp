@@ -300,7 +300,7 @@ rule token args skip = parse
 
  | xint8 
      { let n = lexemeTrimRightToSmallInt args lexbuf 1
-       if n > Byte.MaxValue || n < 0 then fail args lexbuf (FSComp.SR.lexOutsideEightBitSignedHex()) (INT8(0y,false))
+       if n > int Byte.MaxValue || n < 0 then fail args lexbuf (FSComp.SR.lexOutsideEightBitSignedHex()) (INT8(0y,false))
        else INT8(sbyte(byte(n)),false) }
 
  | uint8
@@ -315,7 +315,7 @@ rule token args skip = parse
 
  | xint16 
      { let n = lexemeTrimRightToSmallInt args lexbuf 1
-       if n > UInt16.MaxValue || n < 0 then fail args lexbuf (FSComp.SR.lexOutsideSixteenBitSigned()) (INT16(0s,false))
+       if n > int UInt16.MaxValue || n < 0 then fail args lexbuf (FSComp.SR.lexOutsideSixteenBitSigned()) (INT16(0s,false))
        else INT16(int16(uint16(n)),false) }
 
  | uint16 
@@ -366,8 +366,8 @@ rule token args skip = parse
 
  | nativeint  
      { let s = removeUnderscores (lexemeTrimRight lexbuf 1)
-       let n = parseNativeInt args.errorLogger lexbuf.LexemeRange s
-       NATIVEINT(n) } 
+       let n, mpo = parseNativeIntAllowMaxIntPlusOne args.errorLogger lexbuf.LexemeRange s
+       NATIVEINT(n, mpo) } 
 
  | unativeint 
      { let s = removeUnderscores (lexemeTrimRight lexbuf 2)
