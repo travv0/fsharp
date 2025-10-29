@@ -297,9 +297,9 @@ type Derived3() =
     [<Fact>]
     let ``Interface member with tuple argument should give error message with better solution``() =
         FSharp """
-type IFoo = 
+type IFoo =
   abstract member Bar: (int * int) -> int
-  
+
 type Foo =
   interface IFoo with
     member _.Bar (x, y) = x + y
@@ -316,14 +316,14 @@ let f1 =
     [|
         if true then
             1
-        "wrong" 
+        "wrong"
     |]
 
 let f2: int list =
     [
         if true then
             "a"
-        yield! [ 3; 4 ] 
+        yield! [ 3; 4 ]
     ]
 
 let f3 =
@@ -331,7 +331,7 @@ let f3 =
         if true then
             "a"
             "b"
-        yield! [ 3; 4 ] 
+        yield! [ 3; 4 ]
     ]
 
 let f4 =
@@ -370,3 +370,54 @@ let main args =
             (Error 1, Line 8, Col 25, Line 8, Col 37, "The tuples have differing lengths of 3 and 2")
         ]
 
+    module ``Type annotations should not mask actual expression type in error`` =
+
+        [<Fact>]
+        let ``Type annotation on binding pattern shows actual expression type``() =
+            FSharp """
+let a, b: int = ()
+            """
+            |> typecheck
+            |> shouldFail
+            |> withSingleDiagnostic (Error 1, Line 2, Col 17, Line 2, Col 19,
+                                     "This expression was expected to have type\n    ''a * 'b'    \nbut here has type\n    'unit'    ")
+
+        [<Fact>]
+        let ``Type annotation on binding pattern shows annotated and actual expression type when pattern matches``() =
+            FSharp """
+let a, b: int = 1, 2
+            """
+            |> typecheck
+            |> shouldFail
+            |> withSingleDiagnostic (Error 1, Line 2, Col 17, Line 2, Col 21,
+                                     "This expression was expected to have type\n    'int'    \nbut here has type\n    'int * int'    ")
+
+        [<Fact>]
+        let ``Type annotation after expression shows actual expression type``() =
+            FSharp """
+let x, y = () : int
+            """
+            |> typecheck
+            |> shouldFail
+            |> withSingleDiagnostic (Error 1, Line 2, Col 12, Line 2, Col 14,
+                                     "This expression was expected to have type\n    ''a * 'b'    \nbut here has type\n    'unit'    ")
+
+        [<Fact>]
+        let ``Type annotation with tuple pattern shows actual expression type``() =
+            FSharp """
+let (a, b): string = 12
+            """
+            |> typecheck
+            |> shouldFail
+            |> withSingleDiagnostic (Error 1, Line 2, Col 22, Line 2, Col 24,
+                                     "This expression was expected to have type\n    ''a * 'b'    \nbut here has type\n    'int'    ")
+
+        [<Fact>]
+        let ``Type annotation with tuple pattern shows actual expression type2``() =
+            FSharp """
+let (a, b): string = "hello"
+            """
+            |> typecheck
+            |> shouldFail
+            |> withSingleDiagnostic (Error 1, Line 2, Col 22, Line 2, Col 29,
+                                     "This expression was expected to have type\n    ''a * 'b'    \nbut here has type\n    'string'    ")
