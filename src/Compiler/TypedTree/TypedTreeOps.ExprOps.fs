@@ -192,8 +192,10 @@ module internal AddressOps =
                 None, exprForValRef m vref, readonly, writeonly
 
             // LVALUE of "x" where "x" is mutable local, mutable intra-assembly module/static binding, or operation doesn't mutate.
-            // Note: we can always take the address of mutable intra-assembly values
-            | Expr.Val(vref, _, m) when MustTakeAddressOfVal g vref || CanTakeAddressOfImmutableVal g m vref mut ->
+            // Note: we can always take the address of mutable intra-assembly values.
+            // The second pattern matches a type-instantiated local value reference produced by TcVal for generalized let bindings.
+            | Expr.Val(vref, _, m)
+            | Expr.App(Expr.Val(vref, _, _), _, _, [], m) when MustTakeAddressOfVal g vref || CanTakeAddressOfImmutableVal g m vref mut ->
                 let readonly = not (MustTakeAddressOfVal g vref)
                 let writeonly = false
                 checkTakeNativeAddress readonly
@@ -455,7 +457,14 @@ module internal ExprFolding =
                              not (c.FieldByIndex n).IsMutable
                              && not (entityRefInThisAssembly g.compilingFSharpCore tcref)
                          then
-                             errorR (Error(FSComp.SR.tastRecursiveValuesMayNotAppearInConstructionOfType (tcref.LogicalName), m))
+                             errorR (
+                                 Error(
+                                     FSComp.SR.tastRecursiveValuesMayNotAppearInConstructionOfType (
+                                         richTextOfEntityRefName tcref tcref.LogicalName
+                                     ),
+                                     m
+                                 )
+                             )
 
                          mkUnionCaseFieldSet (access, c, tinst, n, e, m))))
 
@@ -475,8 +484,8 @@ module internal ExprFolding =
                              errorR (
                                  Error(
                                      FSComp.SR.tastRecursiveValuesMayNotBeAssignedToNonMutableField (
-                                         fspec.rfield_id.idText,
-                                         tcref.LogicalName
+                                         RichText.mkField fspec.rfield_id.idText,
+                                         richTextOfEntityRefName tcref tcref.LogicalName
                                      ),
                                      m
                                  )
@@ -546,8 +555,7 @@ module internal ExprFolding =
         let rec exprsF z xs = List.fold exprFClosure z xs
 
         and exprF (z: 'State) (x: Expr) =
-            stackGuard.Guard
-            <| fun () -> folders.exprIntercept exprFClosure exprNoInterceptFClosure z x
+            stackGuard.Guard(fun () -> folders.exprIntercept exprFClosure exprNoInterceptFClosure z x)
 
         and exprNoInterceptF (z: 'State) (x: Expr) =
             match x with
@@ -1366,6 +1374,9 @@ module internal Makers =
     let mkCallNewFormat (g: TcGlobals) m aty bty cty dty ety formatStringExpr =
         mkApps g (typedExprForIntrinsic g m g.new_format_info, [ [ aty; bty; cty; dty; ety ] ], [ formatStringExpr ], m)
 
+    let mkCallStringOperator (g: TcGlobals) m argTy e =
+        mkApps g (typedExprForIntrinsic g m g.string_operator_info, [ [ argTy ] ], [ e ], m)
+
     let tryMkCallBuiltInWitness (g: TcGlobals) traitInfo argExprs m =
         let info, tinst = g.MakeBuiltInWitnessInfo traitInfo
         let vref = ValRefForIntrinsic info
@@ -1449,9 +1460,6 @@ module internal Makers =
     let mkCallSeqEmpty g m ty1 =
         mkApps g (typedExprForIntrinsic g m g.seq_empty_info, [ [ ty1 ] ], [], m)
 
-    let mkCall_sprintf (g: TcGlobals) m funcTy fmtExpr fillExprs =
-        mkApps g (typedExprForIntrinsic g m g.sprintf_info, [ [ funcTy ] ], fmtExpr :: fillExprs, m)
-
     let mkCallDeserializeQuotationFSharp20Plus g m e1 e2 e3 e4 =
         let args = [ e1; e2; e3; e4 ]
         mkApps g (typedExprForIntrinsic g m g.deserialize_quoted_FSharp_20_plus_info, [], [ mkRefTupledNoTypes g m args ], m)
@@ -1483,7 +1491,7 @@ module internal Makers =
         // Use "Expr.WithValue" if it exists in FSharp.Core
         match vref.TryDeref with
         | ValueSome _ ->
-            let copyOfExpr = copyExpr g ValCopyFlag.CloneAll e1
+            let copyOfExpr = copyExprKeepingRecursiveValLinks g ValCopyFlag.CloneAll e1
             let quoteOfCopyOfExpr = Expr.Quote(copyOfExpr, ref None, false, m, qty)
 
             mkApps
@@ -1569,6 +1577,67 @@ module internal Makers =
             [ arg ],
             m
         )
+
+    let private optimizedClosureILShape (g: TcGlobals) (argTys: TType list) retTy =
+        let arity = List.length argTys
+        let formalArgTys = List.init arity (fun i -> ILType.TypeVar(uint16 i))
+        let formalRetTy = ILType.TypeVar(uint16 arity)
+
+        let optClosILTy =
+            mkILBoxedTy (g.optimizedClosures_FSharpFunc_tcref arity).CompiledRepresentationForNamedType (formalArgTys @ [ formalRetTy ])
+
+        formalArgTys, formalRetTy, optClosILTy, argTys @ [ retTy ]
+
+    let mkCallOptimizedClosuresAdapt (g: TcGlobals) m (argTys: TType list) (retTy: TType) folderExpr =
+        let formalArgTys, formalRetTy, optClosILTy, tinst =
+            optimizedClosureILShape g argTys retTy
+
+        let formalFolderTy =
+            (formalArgTys, formalRetTy)
+            ||> List.foldBack (fun dty rty -> mkILBoxedTy g.fastFunc_tcr.CompiledRepresentationForNamedType [ dty; rty ])
+
+        let mspec =
+            mkILNonGenericStaticMethSpecInTy (optClosILTy, "Adapt", [ formalFolderTy ], optClosILTy)
+
+        let resultTy =
+            mkWoNullAppTy (g.optimizedClosures_FSharpFunc_tcref argTys.Length) tinst
+
+        let call =
+            Expr.Op(
+                TOp.ILCall(false, false, false, false, ValUseFlag.NormalValUse, false, false, mspec.MethodRef, tinst, [], [ resultTy ]),
+                [],
+                [ folderExpr ],
+                m
+            )
+
+        call, resultTy
+
+    let mkCallOptimizedClosuresInvoke (g: TcGlobals) m (argTys: TType list) (retTy: TType) fExpr argExprs =
+        assert (List.length argExprs = argTys.Length)
+
+        let formalArgTys, formalRetTy, optClosILTy, tinst =
+            optimizedClosureILShape g argTys retTy
+
+        let mspec =
+            mkILNonGenericInstanceMethSpecInTy (optClosILTy, "Invoke", formalArgTys, formalRetTy)
+
+        Expr.Op(
+            TOp.ILCall(true, false, false, false, ValUseFlag.NormalValUse, false, false, mspec.MethodRef, tinst, [], [ retTy ]),
+            [],
+            fExpr :: argExprs,
+            m
+        )
+
+    /// Concatenate string-valued expressions, choosing the cheapest String.Concat overload by arity.
+    /// An empty list yields "" and a singleton yields itself.
+    let mkStringConcat (g: TcGlobals, m: range, exprs: Expr list) =
+        match exprs with
+        | [] -> mkString g m ""
+        | [ arg ] -> arg
+        | [ arg1; arg2 ] -> mkStaticCall_String_Concat2 g m arg1 arg2
+        | [ arg1; arg2; arg3 ] -> mkStaticCall_String_Concat3 g m arg1 arg2 arg3
+        | [ arg1; arg2; arg3; arg4 ] -> mkStaticCall_String_Concat4 g m arg1 arg2 arg3 arg4
+        | _ -> mkStaticCall_String_Concat_Array g m (mkArray (g.string_ty, exprs, m))
 
     // Quotations can't contain any IL.
     // As a result, we aim to get rid of all IL generation in the typechecker and pattern match
@@ -1896,6 +1965,13 @@ module internal ExprTransforms =
             List.foldBack (fun vs (e, ty) -> mkMultiLambda m vs (e, ty), (mkFunTy g (mkRefTupledVarsTy g vs) ty)) vsl (call, rtyR)
         // Build a type-lambda expression for the toplevel value if needed...
         mkTypeLambda m tpsR (tauexpr, tauty), tpsR +-> tauty
+
+    let TryEtaExpandUnderAppliedValApp g m (vref: ValRef) flags tyargs fty args =
+        match vref.ValReprInfo with
+        | Some valReprInfo when valReprInfo.NumCurriedArgs > List.length args ->
+            let etaExpr = fst (AdjustValForExpectedValReprInfo g m vref flags valReprInfo)
+            Some(MakeApplicationAndBetaReduce g (etaExpr, fty, [ tyargs ], args, m))
+        | _ -> None
 
     let stripTupledFunTy g ty =
         let argTys, retTy = stripFunTy g ty
@@ -2231,7 +2307,7 @@ module internal ExprTransforms =
         | None -> inputExpr
         | Some(exprR, []) -> exprR
         | Some(exprR, argsR) ->
-            //printfn "adjusted...."
+            //printn "adjusted...."
             Expr.App(exprR, tyOfExpr g exprR, [], argsR, inputExpr.Range)
 
     //---------------------------------------------------------------------------

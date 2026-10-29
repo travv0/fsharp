@@ -312,7 +312,7 @@ module internal XmlDocSignatures =
         let vtps = v.Typars |> Zset.ofList typarOrder
 
         if not (isFunTy g v.TauType) then
-            errorR (Error(FSComp.SR.activePatternIdentIsNotFunctionTyped (v.LogicalName), v.Range))
+            errorR (Error(FSComp.SR.activePatternIdentIsNotFunctionTyped (RichText.mkActivePatternCase v.LogicalName), v.Range))
 
         let argTys, resty = stripFunTy g vty
 
@@ -673,7 +673,7 @@ module internal TypeTestsAndPatterns =
     let GetMemberCallInfo g (vref: ValRef, vFlags) =
         match vref.MemberInfo with
         | Some membInfo when not vref.IsExtensionMember ->
-            let numEnclTypeArgs = vref.MemberApparentEntity.TyparsNoRange.Length
+            let numEnclTypeArgs = vref.MemberApparentEntity.Typars.Length
 
             let virtualCall =
                 (membInfo.MemberFlags.IsOverrideOrExplicitImpl
@@ -746,8 +746,7 @@ module internal Rewriting =
     and rewriteBinds env binds = List.map (rewriteBind env) binds
 
     and RewriteExpr env expr =
-        env.StackGuard.Guard
-        <| fun () ->
+        env.StackGuard.Guard(fun () ->
             match expr with
             | LinearOpExpr _
             | LinearMatchExpr _
@@ -760,7 +759,7 @@ module internal Rewriting =
                     | Some expr -> expr
                     | None -> rewriteExprStructure env expr
 
-                postRewriteExpr env expr
+                postRewriteExpr env expr)
 
     and preRewriteExpr env expr =
         match env.PreIntercept with
@@ -978,7 +977,7 @@ module internal Rewriting =
 
     let rec remapEntityDataToNonLocal ctxt tmenv (d: Entity) =
         let tpsR, tmenvinner =
-            tmenvCopyRemapAndBindTypars (remapAttribs ctxt tmenv) tmenv (d.entity_typars.Force(d.entity_range))
+            tmenvCopyRemapAndBindTypars (remapAttribs ctxt tmenv) tmenv d.Typars
 
         let typarsR = LazyWithContext.NotLazy tpsR
         let attribsR = d.entity_attribs.AsList() |> remapAttribs ctxt tmenvinner
@@ -1023,16 +1022,15 @@ module internal Rewriting =
         remapTyconToNonLocal ctxt tmenv x
 
     (* Which constraints actually get compiled to .NET constraints? *)
-    let isCompiledOrWitnessPassingConstraint (g: TcGlobals) cx =
+    let isCompiledOrWitnessPassingConstraint cx =
         match cx with
         | TyparConstraint.SupportsNull _ // this implies the 'class' constraint
         | TyparConstraint.IsReferenceType _ // this is the 'class' constraint
         | TyparConstraint.IsNonNullableStruct _
-        | TyparConstraint.IsReferenceType _
         | TyparConstraint.RequiresDefaultConstructor _
         | TyparConstraint.IsUnmanaged _ //  implies "struct" and also causes a modreq
-        | TyparConstraint.CoercesTo _ -> true
-        | TyparConstraint.MayResolveMember _ when g.langVersion.SupportsFeature LanguageFeature.WitnessPassing -> true
+        | TyparConstraint.CoercesTo _
+        | TyparConstraint.MayResolveMember _ -> true
         | _ -> false
 
     // Is a value a first-class polymorphic value with .NET constraints, or witness-passing constraints?
@@ -1043,7 +1041,7 @@ module internal Rewriting =
         && v.Type
            |> destForallTy g
            |> fst
-           |> List.exists (fun tp -> HasConstraint (isCompiledOrWitnessPassingConstraint g) tp)
+           |> List.exists (HasConstraint isCompiledOrWitnessPassingConstraint)
 
     // Does a type support a given interface?
     type Entity with
@@ -1254,7 +1252,7 @@ module internal TupleCompilation =
               Let(enumeratorVar,
                   GetEnumeratorCall enumerableVar2,
                   _enumeratorBind,
-                  TryFinally(WhileLoopForCompiledForEachExpr(spInWhile, _, (Let(elemVar, _, _, bodyExpr) as elemLet), _), _))) when
+                  TryFinally(WhileLoopForCompiledForEachExpr(spInWhile, _, (Let(elemVar, _, spElem, bodyExpr) as elemLet), _), _))) when
             // Apply correctness conditions to ensure this really is a compiled for-each expression.
             valRefEq g (mkLocalValRef enumerableVar) enumerableVar2
             && enumerableVar.IsCompilerGenerated
@@ -1271,7 +1269,7 @@ module internal TupleCompilation =
             let mIn = elemLet.Range
 
             let mFor =
-                match spFor with
+                match spElem with
                 | DebugPointAtBinding.Yes mFor -> mFor
                 | _ -> enumerableExpr.Range
 
@@ -1287,7 +1285,7 @@ module internal TupleCompilation =
 
             let enumerableTy = tyOfExpr g enumerableExpr
 
-            ValueSome(enumerableTy, enumerableExpr, elemVar, bodyExpr, (mBody, spFor, spIn, mFor, mIn, spInWhile, mWholeExpr))
+            ValueSome(enumerableTy, enumerableExpr, elemVar, bodyExpr, (mBody, spFor, spElem, spIn, mFor, mIn, spInWhile, mWholeExpr))
         | _ -> ValueNone
 
     [<return: Struct>]
@@ -2147,7 +2145,7 @@ module internal TupleCompilation =
         match option, expr with
         | _, CompiledInt32RangeForEachExpr g (startExpr, (1 | -1 as step), finishExpr, elemVar, bodyExpr, ranges) ->
 
-            let _mBody, spFor, spIn, _mFor, _mIn, _spInWhile, mWholeExpr = ranges
+            let _mBody, spFor, _spElem, spIn, _mFor, _mIn, _spInWhile, mWholeExpr = ranges
 
             let spFor =
                 match spFor with
@@ -2164,13 +2162,13 @@ module internal TupleCompilation =
                      ValueNone)
             with
             | ValueSome(rangeTy, (start, step, finish)) ->
-                let mBody, _spFor, _spIn, mFor, mIn, spInWhile, _mWhole = ranges
+                let mBody, _spFor, _spElem, _spIn, mFor, mIn, spInWhile, _mWhole = ranges
 
                 mkOptimizedRangeLoop g (mBody, mFor, mIn, spInWhile) (rangeTy, enumerableExpr) (start, step, finish) (fun _count mkLoop ->
                     mkLoop (fun _idxVar loopVar -> mkInvisibleLet elemVar.Range elemVar loopVar bodyExpr))
             | ValueNone ->
 
-                let mBody, spFor, spIn, mFor, mIn, spInWhile, mWholeExpr = ranges
+                let mBody, spFor, spElem, spIn, mFor, mIn, spInWhile, mWholeExpr = ranges
 
                 if isStringTy g enumerableTy then
                     // type is string, optimize for expression as:
@@ -2189,7 +2187,7 @@ module internal TupleCompilation =
                     let finishExpr = mkDecr g mFor lengthExpr
                     // for compat reasons, loop item over string is sometimes object, not char
                     let loopItemExpr = mkCoerceIfNeeded g elemVar.Type g.char_ty charExpr
-                    let bodyExpr = mkInvisibleLet mIn elemVar loopItemExpr bodyExpr
+                    let bodyExpr = mkLet spElem mFor elemVar loopItemExpr bodyExpr
 
                     let forExpr =
                         mkFastForLoop g (DebugPointAtFor.No, spIn, mWholeExpr, idxVar, startExpr, true, finishExpr, bodyExpr)
@@ -2223,18 +2221,16 @@ module internal TupleCompilation =
                     let tailOrNullExpr =
                         mkUnionCaseFieldGetUnprovenViaExprAddr (currentExpr, g.cons_ucref, [ elemTy ], IndexTail, mIn)
 
-                    let bodyExpr =
-                        mkInvisibleLet
+                    let loopStep =
+                        mkSequential
                             mIn
-                            elemVar
-                            headOrDefaultExpr
-                            (mkSequential
-                                mIn
-                                bodyExpr
-                                (mkSequential
-                                    mIn
-                                    (mkValSet mIn (mkLocalValRef currentVar) nextExpr)
-                                    (mkValSet mIn (mkLocalValRef nextVar) tailOrNullExpr)))
+                            (mkValSet mIn (mkLocalValRef currentVar) nextExpr)
+                            (mkValSet mIn (mkLocalValRef nextVar) tailOrNullExpr)
+
+                    let bodyAndStep =
+                        mkSequential mIn bodyExpr (Expr.DebugPoint(DebugPointAtLeafExpr.Yes(true, mIn), loopStep))
+
+                    let bodyExpr = mkLet spElem mFor elemVar headOrDefaultExpr bodyAndStep
 
                     let expr =
                         // let mutable current = enumerableExpr
@@ -2353,7 +2349,7 @@ module internal ConstantEvaluation =
             | UncheckedDefaultOfExpr g _
             | SizeOfExpr g _
             | TypeOfExpr g _ -> true
-            | NameOfExpr g _ when g.langVersion.SupportsFeature LanguageFeature.NameOf -> true
+            | NameOfExpr g _ -> true
             // All others are not simple constant expressions
             | _ -> false
 
@@ -2442,13 +2438,9 @@ module internal ConstantEvaluation =
             error (Error(FSComp.SR.tastConstantExpressionOverflow (), m))
 
     // See also PostTypeCheckSemanticChecks.CheckAttribArgExpr, which must match this precisely
-    let rec EvalAttribArgExpr suppressLangFeatureCheck (g: TcGlobals) (x: Expr) =
+    let rec EvalAttribArgExpr (g: TcGlobals) (x: Expr) =
         let ignore (_x: 'a) = Unchecked.defaultof<'a>
         let ignore2 (_x: 'a) (_y: 'a) = Unchecked.defaultof<'a>
-
-        let inline checkFeature () =
-            if suppressLangFeatureCheck = SuppressLanguageFeatureCheck.No then
-                checkLanguageFeatureAndRecover g.langVersion LanguageFeature.ArithmeticInLiterals x.Range
 
         match x with
 
@@ -2479,33 +2471,28 @@ module internal ConstantEvaluation =
 
         | TypeOfExpr g _ -> x
         | TypeDefOfExpr g _ -> x
-        | Expr.Op(TOp.Coerce, _, [ arg ], _) -> EvalAttribArgExpr suppressLangFeatureCheck g arg
-        | EnumExpr g arg1 -> EvalAttribArgExpr suppressLangFeatureCheck g arg1
+        | Expr.Op(TOp.Coerce, _, [ arg ], _) -> EvalAttribArgExpr g arg
+        | EnumExpr g arg1 -> EvalAttribArgExpr g arg1
         // Detect bitwise or of attribute flags
         | AttribBitwiseOrExpr g (arg1, arg2) ->
-            let v1 = EvalAttribArgExpr suppressLangFeatureCheck g arg1
+            let v1 = EvalAttribArgExpr g arg1
 
             match v1 with
             | IntegerConstExpr ->
                 EvalArithBinOp
                     ((|||), (|||), (|||), (|||), (|||), (|||), (|||), (|||), ignore2, ignore2, ignore2)
                     v1
-                    (EvalAttribArgExpr suppressLangFeatureCheck g arg2)
+                    (EvalAttribArgExpr g arg2)
             | _ ->
                 errorR (Error(FSComp.SR.tastNotAConstantExpression (), x.Range))
                 x
         | SpecificBinopExpr g g.unchecked_addition_vref (arg1, arg2) ->
-            let v1, v2 =
-                EvalAttribArgExpr suppressLangFeatureCheck g arg1, EvalAttribArgExpr suppressLangFeatureCheck g arg2
+            let v1, v2 = EvalAttribArgExpr g arg1, EvalAttribArgExpr g arg2
 
             match v1, v2 with
             | Expr.Const(Const.String x1, m, ty), Expr.Const(Const.String x2, _, _) -> Expr.Const(Const.String(x1 + x2), m, ty)
-            | Expr.Const(Const.Char x1, m, ty), Expr.Const(Const.Char x2, _, _) ->
-                checkFeature ()
-                Expr.Const(Const.Char(x1 + x2), m, ty)
+            | Expr.Const(Const.Char x1, m, ty), Expr.Const(Const.Char x2, _, _) -> Expr.Const(Const.Char(x1 + x2), m, ty)
             | _ ->
-                checkFeature ()
-
                 EvalArithBinOp
                     (Checked.(+),
                      Checked.(+),
@@ -2521,10 +2508,7 @@ module internal ConstantEvaluation =
                     v1
                     v2
         | SpecificBinopExpr g g.unchecked_subtraction_vref (arg1, arg2) ->
-            checkFeature ()
-
-            let v1, v2 =
-                EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1, EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg2
+            let v1, v2 = EvalAttribArgExpr g arg1, EvalAttribArgExpr g arg2
 
             match v1, v2 with
             | Expr.Const(Const.Char x1, m, ty), Expr.Const(Const.Char x2, _, _) -> Expr.Const(Const.Char(x1 - x2), m, ty)
@@ -2544,8 +2528,6 @@ module internal ConstantEvaluation =
                     v1
                     v2
         | SpecificBinopExpr g g.unchecked_multiply_vref (arg1, arg2) ->
-            checkFeature ()
-
             EvalArithBinOp
                 (Checked.(*),
                  Checked.(*),
@@ -2558,90 +2540,63 @@ module internal ConstantEvaluation =
                  Checked.(*),
                  Checked.(*),
                  Checked.(*))
-                (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1)
-                (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg2)
+                (EvalAttribArgExpr g arg1)
+                (EvalAttribArgExpr g arg2)
         | SpecificBinopExpr g g.unchecked_division_vref (arg1, arg2) ->
-            checkFeature ()
-
-            EvalArithBinOp
-                ((/), (/), (/), (/), (/), (/), (/), (/), (/), (/), (/))
-                (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1)
-                (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg2)
+            EvalArithBinOp ((/), (/), (/), (/), (/), (/), (/), (/), (/), (/), (/)) (EvalAttribArgExpr g arg1) (EvalAttribArgExpr g arg2)
         | SpecificBinopExpr g g.unchecked_modulus_vref (arg1, arg2) ->
-            checkFeature ()
-
-            EvalArithBinOp
-                ((%), (%), (%), (%), (%), (%), (%), (%), (%), (%), (%))
-                (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1)
-                (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg2)
+            EvalArithBinOp ((%), (%), (%), (%), (%), (%), (%), (%), (%), (%), (%)) (EvalAttribArgExpr g arg1) (EvalAttribArgExpr g arg2)
         | SpecificBinopExpr g g.bitwise_shift_left_vref (arg1, arg2) ->
-            checkFeature ()
-
-            EvalArithShiftOp
-                ((<<<), (<<<), (<<<), (<<<), (<<<), (<<<), (<<<), (<<<))
-                (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1)
-                (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg2)
+            EvalArithShiftOp ((<<<), (<<<), (<<<), (<<<), (<<<), (<<<), (<<<), (<<<)) (EvalAttribArgExpr g arg1) (EvalAttribArgExpr g arg2)
         | SpecificBinopExpr g g.bitwise_shift_right_vref (arg1, arg2) ->
-            checkFeature ()
-
-            EvalArithShiftOp
-                ((>>>), (>>>), (>>>), (>>>), (>>>), (>>>), (>>>), (>>>))
-                (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1)
-                (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg2)
+            EvalArithShiftOp ((>>>), (>>>), (>>>), (>>>), (>>>), (>>>), (>>>), (>>>)) (EvalAttribArgExpr g arg1) (EvalAttribArgExpr g arg2)
         | SpecificBinopExpr g g.bitwise_and_vref (arg1, arg2) ->
-            checkFeature ()
-            let v1 = EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1
+            let v1 = EvalAttribArgExpr g arg1
 
             match v1 with
             | IntegerConstExpr ->
                 EvalArithBinOp
                     ((&&&), (&&&), (&&&), (&&&), (&&&), (&&&), (&&&), (&&&), ignore2, ignore2, ignore2)
                     v1
-                    (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg2)
+                    (EvalAttribArgExpr g arg2)
             | _ ->
                 errorR (Error(FSComp.SR.tastNotAConstantExpression (), x.Range))
                 x
         | SpecificBinopExpr g g.bitwise_xor_vref (arg1, arg2) ->
-            checkFeature ()
-            let v1 = EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1
+            let v1 = EvalAttribArgExpr g arg1
 
             match v1 with
             | IntegerConstExpr ->
                 EvalArithBinOp
                     ((^^^), (^^^), (^^^), (^^^), (^^^), (^^^), (^^^), (^^^), ignore2, ignore2, ignore2)
                     v1
-                    (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg2)
+                    (EvalAttribArgExpr g arg2)
             | _ ->
                 errorR (Error(FSComp.SR.tastNotAConstantExpression (), x.Range))
                 x
         | SpecificBinopExpr g g.exponentiation_vref (arg1, arg2) ->
-            checkFeature ()
-            let v1 = EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1
+            let v1 = EvalAttribArgExpr g arg1
 
             match v1 with
             | FloatConstExpr ->
                 EvalArithBinOp
                     (ignore2, ignore2, ignore2, ignore2, ignore2, ignore2, ignore2, ignore2, ( ** ), ( ** ), ignore2)
                     v1
-                    (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg2)
+                    (EvalAttribArgExpr g arg2)
             | _ ->
                 errorR (Error(FSComp.SR.tastNotAConstantExpression (), x.Range))
                 x
         | SpecificUnopExpr g g.bitwise_unary_not_vref arg1 ->
-            checkFeature ()
-            let v1 = EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1
+            let v1 = EvalAttribArgExpr g arg1
 
             match v1 with
             | IntegerConstExpr ->
-                EvalArithUnOp
-                    ((~~~), (~~~), (~~~), (~~~), (~~~), (~~~), (~~~), (~~~), ignore, ignore)
-                    (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1)
+                EvalArithUnOp ((~~~), (~~~), (~~~), (~~~), (~~~), (~~~), (~~~), (~~~), ignore, ignore) (EvalAttribArgExpr g arg1)
             | _ ->
                 errorR (Error(FSComp.SR.tastNotAConstantExpression (), x.Range))
                 x
         | SpecificUnopExpr g g.unchecked_unary_minus_vref arg1 ->
-            checkFeature ()
-            let v1 = EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1
+            let v1 = EvalAttribArgExpr g arg1
 
             match v1 with
             | SignedConstExpr ->
@@ -2652,15 +2607,9 @@ module internal ConstantEvaluation =
                 errorR (Error(FSComp.SR.tastNotAConstantExpression (), v1.Range))
                 x
         | SpecificUnopExpr g g.unchecked_unary_plus_vref arg1 ->
-            checkFeature ()
-
-            EvalArithUnOp
-                ((~+), (~+), (~+), (~+), (~+), (~+), (~+), (~+), (~+), (~+))
-                (EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1)
+            EvalArithUnOp ((~+), (~+), (~+), (~+), (~+), (~+), (~+), (~+), (~+), (~+)) (EvalAttribArgExpr g arg1)
         | SpecificUnopExpr g g.unchecked_unary_not_vref arg1 ->
-            checkFeature ()
-
-            match EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g arg1 with
+            match EvalAttribArgExpr g arg1 with
             | Expr.Const(Const.Bool value, m, ty) -> Expr.Const(Const.Bool(not value), m, ty)
             | expr ->
                 errorR (Error(FSComp.SR.tastNotAConstantExpression (), expr.Range))
@@ -2669,16 +2618,14 @@ module internal ConstantEvaluation =
         | Expr.Match(
             decision = TDSwitch(input = input; cases = [ TCase(DecisionTreeTest.Const(Const.Bool test), TDSuccess([], targetNum)) ])
             targets = [| TTarget(_, t0, _); TTarget(_, t1, _) |]) ->
-            checkFeature ()
-
-            match EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g (stripDebugPoints input) with
+            match EvalAttribArgExpr g (stripDebugPoints input) with
             | Expr.Const(Const.Bool value, _, _) ->
                 let pass, fail = if targetNum = 0 then t0, t1 else t1, t0
 
                 if value = test then
-                    EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g (stripDebugPoints pass)
+                    EvalAttribArgExpr g (stripDebugPoints pass)
                 else
-                    EvalAttribArgExpr SuppressLanguageFeatureCheck.Yes g (stripDebugPoints fail)
+                    EvalAttribArgExpr g (stripDebugPoints fail)
             | _ ->
                 errorR (Error(FSComp.SR.tastNotAConstantExpression (), x.Range))
                 x
@@ -2716,9 +2663,9 @@ module internal ConstantEvaluation =
         match x with
         | Expr.Op(TOp.Coerce, _, [ Expr.Op(TOp.Array, [ elemTy ], args, m) ], _)
         | Expr.Op(TOp.Array, [ elemTy ], args, m) ->
-            let args = args |> List.map (EvalAttribArgExpr SuppressLanguageFeatureCheck.No g)
+            let args = args |> List.map (EvalAttribArgExpr g)
             Expr.Op(TOp.Array, [ elemTy ], args, m)
-        | _ -> EvalAttribArgExpr SuppressLanguageFeatureCheck.No g x
+        | _ -> EvalAttribArgExpr g x
 
     /// Match an Int32 constant expression
     [<return: Struct>]

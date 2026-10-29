@@ -608,7 +608,7 @@ module UnionTypes =
         |> verifyCompile
         |> shouldFail
         |> withDiagnostics [
-            (Error 58, Line 9, Col 1, Line 9, Col 2, "Unexpected syntax or possible incorrect indentation: this token is offside of context started at position (8:19). Try indenting this further.\nTo continue using non-conforming indentation, pass the '--strict-indentation-' flag to the compiler, or set the language version to F# 7.")
+            (Error 58, Line 9, Col 1, Line 9, Col 2, "Unexpected syntax or possible incorrect indentation: this token is offside of context started at position (8:19). Try indenting this further.")
             (Error 547, Line 8, Col 24, Line 8, Col 33, "A type definition requires one or more members or other declarations. If you intend to define an empty class, struct or interface, then use 'type ... = class end', 'interface end' or 'struct end'.")
             (Error 10, Line 9, Col 1, Line 9, Col 2, "Unexpected symbol '|' in implementation file")
         ]
@@ -721,7 +721,7 @@ if (sprintf "%%A" ABC.ab) <> "[A; B]" then failwith (sprintf "Failed: printing '
         |> asExe
         |> compileAndRun
         |> shouldSucceed
-        
+
     [<Fact>]
     let ``Error when declaring an abstract member in union type`` () =
         Fsx """
@@ -729,11 +729,11 @@ type U =
   | A | B
   abstract M : unit -> unit
        """
-        |> typecheck 
+        |> typecheck
         |> shouldFail
         |>  withSingleDiagnostic (Error 912, Line 4, Col 3, Line 4, Col 28, "This declaration element is not permitted in an augmentation")
-        
-        
+
+
     [<Fact>]
     let ``Error when property has same name as DU case`` () =
         Fsx """
@@ -757,13 +757,13 @@ type MyId =
         | IdC x -> Some x
         | _ -> None
        """
-        |> typecheck 
+        |> typecheck
         |> shouldFail
         |> withDiagnostics [
             (Error 23, Line 7, Col 17, Line 7, Col 20, "The member 'IdA' cannot be defined because the name 'IdA' clashes with the union case 'IdA' in this type or module")
             (Error 23, Line 17, Col 17, Line 17, Col 20, "The member 'IdC' cannot be defined because the name 'IdC' clashes with the union case 'IdC' in this type or module")
         ]
-        
+
 
     [<Fact>]
     let ``Union field appears multiple times in union declaration`` () =

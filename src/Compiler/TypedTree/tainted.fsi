@@ -21,15 +21,19 @@ type internal TypeProviderLock =
 type internal TypeProviderError =
     inherit System.Exception
 
-    /// creates new instance of TypeProviderError that represents one error
+    new: (int * RichText) * string * range -> TypeProviderError
     new: (int * string) * string * range -> TypeProviderError
-
-    /// creates new instance of TypeProviderError that represents collection of errors
+    new: int * string * range * seq<RichText> -> TypeProviderError
     new: int * string * range * seq<string> -> TypeProviderError
 
     member Number: int
 
     member Range: range
+
+    /// The message of this error, with the classification of its parts
+    member RichMessage: RichText
+
+    member ContextualErrorRichMessage: RichText
 
     member ContextualErrorMessage: string
 
@@ -37,7 +41,7 @@ type internal TypeProviderError =
     member WithContext: string * string -> TypeProviderError
 
     /// creates new instance of TypeProviderError based on current instance information(message)
-    member MapText: (string -> int * string) * string * range -> TypeProviderError
+    member MapText: (RichText -> int * RichText) * string * range -> TypeProviderError
 
     /// provides uniform way to process aggregated errors
     member Iter: (TypeProviderError -> unit) -> unit

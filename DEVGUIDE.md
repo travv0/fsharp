@@ -164,6 +164,25 @@ You can find all test options as separate flags. For example `build -testAll`:
 
 Running any of the above will build the latest changes and run tests against them.
 
+### Windows editor spot checks with the SDK compiler
+
+In a separate PowerShell session, use the repository-local SDK and keep desktop targets enabled.
+`BUILDING_USING_DOTNET=true` excludes `net472` from the editor's test utilities.
+Build the compiler solution first: the editor test fixture also requires the desktop `fsc` and `fsi` tools.
+
+```powershell
+$env:DOTNET_ROOT = (Resolve-Path .\.dotnet).Path
+$env:BUILDING_USING_DOTNET = "false"
+$compilerArgs = @("-p:DisableCompilerRedirection=true", "-p:DisableAutoSetFscCompilerPath=false")
+.\.dotnet\dotnet.exe build .\FSharp.slnx -c Release @compilerArgs
+.\.dotnet\dotnet.exe build .\vsintegration\tests\FSharp.Editor.Tests\FSharp.Editor.Tests.fsproj -c Release @compilerArgs -p:EmbedUntrackedSources=false
+.\.dotnet\dotnet.exe test --project .\vsintegration\tests\FSharp.Editor.Tests\FSharp.Editor.Tests.fsproj -c Release --no-build @compilerArgs --filter-class "*InlineRenameTests*" "*FindReferencesTests*"
+```
+
+Pass the compiler arguments to both build and test, even with `--no-build`, so neither imports a
+stale or incomplete `artifacts\Bootstrap` toolset. Disabling untracked-source embedding avoids
+generated XAML source-path errors in the SDK-hosted WPF build; all project references still build.
+
 ## Using your custom compiler to build this repository
 
 By removing all the subfolders called `Bootstrap` or `Proto` under `artifacts` and running the `build` script again, the proto compiler will include your changes.
@@ -335,10 +354,13 @@ ilverify_FSharp.Core_Release_netstandard2.0.bsl
 ilverify_FSharp.Core_Release_netstandard2.1.bsl
 ```
 
+The comparison uses a two-level approach: an exact match is tried first, then a **soft comparison** that ignores IL byte offsets (`[offset 0x...]`) and trailing whitespace. Offsets shift whenever code above the error site changes, even though the verification error itself is semantically identical. When only offsets differ the check passes with a warning suggesting a baseline update.
+
 If you want to update them, either
 
 1. Run the [ilverify.ps1]([url](https://github.com/dotnet/fsharp/blob/main/tests/ILVerify/ilverify.ps1)) script in PowerShell. The script will create `.actual` files. If the differences make sense, replace the original baselines with the actual files.
 2. Set the `TEST_UPDATE_BSL` to `1` (please refer to "Updating baselines in tests" section in this file) **and** run `ilverify.ps1` - this will automatically replace baselines. After that, please carefully review the change and push it to your branch if it makes sense.
+3. Use the `/run ilverify` PR comment command to update baselines automatically via CI.
 
 ## Automated Source Code Formatting
 
@@ -367,6 +389,11 @@ See [Developing on Windows](#Developing-on-Windows) for instructions to install 
 First, ensure that `VisualFSharpDebug` is the startup project.
 
 Then, use the **f5** or **ctrl+f5** keyboard shortcuts to test your tooling changes. The former will debug a new instance of Visual Studio. The latter will launch a new instance of Visual Studio, but with your changes installed.
+
+> [!TIP]
+> If the F# extension fails to load when you F5 (because the Roslyn version in the repo is ahead of the one in your Visual Studio), launch VS with `.\start-vs-VisualFSharpSln.ps1` instead of opening the solution directly. It builds the extension against the Roslyn your VS actually ships, so you don't need an internal/nightly VS or a local Roslyn build. Requires VS with Roslyn 5.10 or newer.
+
+Debug builds export traces and metrics over OTLP only when `FSHARP_OTEL_EXPORT` is set, so the default `VisualFSharpDebug` profile stays quiet without a collector running. Pick the `OTEL Export` launch profile - it points `FSHARP_OTEL_EXPORT` at `http://127.0.0.1:4317` - to debug against Jaeger, Prometheus or another OTLP collector listening there.
 
 Alternatively, you can do this entirely via the command line if you prefer that:
 

@@ -28,6 +28,50 @@ module Inlining =
         |> getCompilation
         |> verifyCompilation
 
+    // Regression baseline for dotnet/fsharp#20368: the inline StackGuard.Guard shape must inline the
+    // [<InlineIfLambda>] lambda on the common path. In `callDirect` the closure `newobj` is confined to
+    // the cold else-branch (common path allocates nothing); `callPiped` shows the `<|` form hoisting it
+    // to method entry. A regression that reintroduces a common-path allocation changes this baseline.
+    // Realsig has no effect on this IL, so a single variant is snapshotted.
+    [<Theory; FileInlineData("StackGuardInlineIfLambda.fs")>]
+    let ``StackGuardInlineIfLambda_fs`` compilation =
+        compilation
+        |> getCompilation
+        |> verifyCompilation
+
+    [<Theory; FileInlineData("Regression_TLR_MutualInnerRec.fs", Realsig=BooleanOptions.Both)>]
+    let ``Regression_TLR_MutualInnerRec_fs`` compilation =
+        compilation
+        |> getCompilation
+        |> verifyCompilation
+
+    [<Theory; FileInlineData("Regression_TLR_MutualInnerRec_Point2D.fs", Realsig=BooleanOptions.Both)>]
+    let ``Regression_TLR_MutualInnerRec_Point2D_fs`` compilation =
+        compilation
+        |> getCompilation
+        |> verifyCompilation
+
+    [<Theory; FileInlineData("Regression_TLR_MutualInnerRec_Generic.fs", Realsig=BooleanOptions.Both)>]
+    let ``Regression_TLR_MutualInnerRec_Generic_fs`` compilation =
+        compilation
+        |> getCompilation
+        |> verifyCompilation
+
+    [<Theory; FileInlineData("Regression_TLR_MutualInnerRec_CapturedEnv.fs", Realsig=BooleanOptions.Both)>]
+    let ``Regression_TLR_MutualInnerRec_CapturedEnv_fs`` compilation =
+        compilation
+        |> getCompilation
+        |> verifyCompilation
+
+    // Baseline lock for dotnet/fsharp#19933: a closure inside a `type C with member ...`
+    // augmentation must nest inside C (realsig+) so it can reach C's IL-private members.
+    // Realsig=Both snapshots both the realsig+ nesting and the realsig- lowering.
+    [<Theory; FileInlineData("AugmentationClosureNesting.fs", Realsig=BooleanOptions.Both)>]
+    let ``AugmentationClosureNesting_fs`` compilation =
+        compilation
+        |> getCompilation
+        |> verifyCompilation
+
     // SOURCE=Match02.fs SCFLAGS="-a --optimize+" COMPILE_ONLY=1 POSTCMD="..\\CompareIL.cmd Match02.dll"	# Match02.fs
     [<Theory; FileInlineData("Match02.fs")>]
     let ``Match02_fs`` compilation =
@@ -185,6 +229,65 @@ printfn $"{(SecondType ()).SecondMethod()}"
         |> compileAndRun
         |> shouldSucceed
 
+    [<Theory>]
+    [<InlineData("--optimize-")>]
+    [<InlineData("--optimize+")>]
+    let ``Issue 20614 - inline base call to inline member`` optimization =
+        let library =
+            FSharp """
+module InlineBaseCall
+
+type One() =
+    member inline _.Source1 x = x
+    member inline _.P = 5
+
+type Two() =
+    inherit One()
+    member inline this.Source2 x = base.Source1 x
+    // A generic sibling that uses 'base' wraps the members in a free-choice type binding
+    member inline this.P2 = base.P
+    member this.Generic x = base.Source1 x
+"""
+            |> withOptions [ optimization ]
+            |> asLibrary
+
+        FSharp """
+module Consumer
+
+open InlineBaseCall
+
+[<EntryPoint>]
+let main _ =
+    let two = Two()
+    if two.Source2 42 = 42 && two.P2 = 5 && two.Generic "a" = "a" then 0 else 1
+"""
+        |> withReferences [ library ]
+        |> withOptions [ optimization ]
+        |> asExe
+        |> compileAndRun
+        |> shouldSucceed
+
+    [<Theory>]
+    [<InlineData("--optimize-")>]
+    [<InlineData("--optimize+")>]
+    let ``Issue 20614 - base reference cannot escape inline member`` optimization =
+        FSharp """
+module InlineBaseCall
+
+type One() =
+    member _.Value = 2
+    member inline this.Source1 x = this.Value + x
+
+type Two() =
+    inherit One()
+    member inline this.Source2 x = base.Source1 x
+    member inline this.Text () = base.ToString()
+"""
+        |> withOptions [ optimization ]
+        |> asLibrary
+        |> compile
+        |> shouldFail
+        |> withErrorCodes [ 3925; 3925 ]
 
     // Test empty string pattern optimization in inlining
     [<Theory; FileInlineData("EmptyStringPattern.fs")>]

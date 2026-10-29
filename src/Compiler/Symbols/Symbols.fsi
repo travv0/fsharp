@@ -66,6 +66,8 @@ type FSharpDisplayContext =
 
     member WithShortTypeNames: bool -> FSharpDisplayContext
 
+    member WithNullnessAnnotations: bool -> FSharpDisplayContext
+
     /// Causes type signatures to be formatted with prefix-style generic parameters,
     /// for example `list<int>`.
     member WithPrefixGenericParameters: unit -> FSharpDisplayContext
@@ -78,6 +80,13 @@ type FSharpDisplayContext =
     /// while nested types inherit generic parameters style from the current `FSharpDisplayContext` instance,
     /// for example, `int list seq` becomes `seq<int list>`
     member WithTopLevelPrefixGenericParameters: unit -> FSharpDisplayContext
+
+[<Struct>]
+type FSharpObsoleteDiagnosticInfo =
+    { IsError: bool
+      DiagnosticId: string option
+      Message: string option
+      UrlFormat: string option }
 
 /// Represents a symbol in checked F# source code or a compiled .NET component.
 ///
@@ -147,6 +156,8 @@ type FSharpSymbol =
 
     /// Indicates if this symbol has an attribute matching the full name of the given type parameter
     member HasAttribute<'T> : unit -> bool
+
+    abstract ObsoleteDiagnosticInfo: FSharpObsoleteDiagnosticInfo option
 
 /// Represents an assembly as seen by the F# language
 type FSharpAssembly =
@@ -892,6 +903,9 @@ type FSharpMemberOrFunctionOrValue =
     /// Indicates if this is a setter method for a property, or a use of a property in setter mode
     member IsPropertySetterMethod: bool
 
+    /// Indicates if this is an accessor method for a property, i.e. either a getter or a setter.
+    member IsPropertyAccessor: bool
+
     /// Indicates if this is an add method for an event
     member IsEventAddMethod: bool
 
@@ -986,10 +1000,10 @@ type FSharpMemberOrFunctionOrValue =
     member IsConstructor: bool
 
     /// Format the type using the rules of the given display context
-    member FormatLayout: displayContext: FSharpDisplayContext -> TaggedText[]
+    member FormatRichText: displayContext: FSharpDisplayContext -> RichText
 
     /// Format the type using the rules of the given display context
-    member GetReturnTypeLayout: displayContext: FSharpDisplayContext -> TaggedText[] option
+    member GetReturnTypeRichText: displayContext: FSharpDisplayContext -> RichText option
 
     /// Get the signature text to include this Symbol into an existing signature file.
     member GetValSignatureText: displayContext: FSharpDisplayContext * m: range -> string option
@@ -1159,10 +1173,10 @@ type FSharpType =
     member FormatWithConstraints: context: FSharpDisplayContext -> string
 
     /// Format the type using the rules of the given display context
-    member FormatLayout: context: FSharpDisplayContext -> TaggedText[]
+    member FormatRichText: context: FSharpDisplayContext -> RichText
 
     /// Format the type - with constraints - using the rules of the given display context
-    member FormatLayoutWithConstraints: context: FSharpDisplayContext -> TaggedText[]
+    member FormatRichTextWithConstraints: context: FSharpDisplayContext -> RichText
 
     /// Instantiate generic type parameters in a type
     member Instantiate: (FSharpGenericParameter * FSharpType) list -> FSharpType

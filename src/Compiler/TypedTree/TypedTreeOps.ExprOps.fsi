@@ -208,6 +208,9 @@ module internal Makers =
     val mkCallNewFormat:
         TcGlobals -> range -> TType -> TType -> TType -> TType -> TType -> formatStringExpr: Expr -> Expr
 
+    /// Build a call to the 'string' operator (Operators.ToString) at the given argument type.
+    val mkCallStringOperator: TcGlobals -> range -> argTy: TType -> Expr -> Expr
+
     val mkCallGetGenericComparer: TcGlobals -> range -> Expr
 
     val mkCallGetGenericEREqualityComparer: TcGlobals -> range -> Expr
@@ -401,9 +404,6 @@ module internal Makers =
 
     val mkCallSeqEmpty: TcGlobals -> range -> TType -> Expr
 
-    /// Make a call to the 'isprintf' function for string interpolation
-    val mkCall_sprintf: g: TcGlobals -> m: range -> funcTy: TType -> fmtExpr: Expr -> fillExprs: Expr list -> Expr
-
     val mkCallDeserializeQuotationFSharp20Plus: TcGlobals -> range -> Expr -> Expr -> Expr -> Expr -> Expr
 
     val mkCallDeserializeQuotationFSharp40Plus: TcGlobals -> range -> Expr -> Expr -> Expr -> Expr -> Expr -> Expr
@@ -438,6 +438,12 @@ module internal Makers =
 
     val mkGetStringLength: TcGlobals -> range -> Expr -> Expr
 
+    /// `OptimizedClosures.FSharpFunc<argTys, retTy>.Adapt(folderExpr)`. Returns the call and its result type.
+    val mkCallOptimizedClosuresAdapt: TcGlobals -> range -> TType list -> TType -> Expr -> Expr * TType
+
+    /// `fExpr.Invoke(argExprs)` on an `OptimizedClosures.FSharpFunc<argTys, retTy>`.
+    val mkCallOptimizedClosuresInvoke: TcGlobals -> range -> TType list -> TType -> Expr -> Expr list -> Expr
+
     val mkStaticCall_String_Concat2: TcGlobals -> range -> Expr -> Expr -> Expr
 
     val mkStaticCall_String_Concat3: TcGlobals -> range -> Expr -> Expr -> Expr -> Expr
@@ -445,6 +451,10 @@ module internal Makers =
     val mkStaticCall_String_Concat4: TcGlobals -> range -> Expr -> Expr -> Expr -> Expr -> Expr
 
     val mkStaticCall_String_Concat_Array: TcGlobals -> range -> Expr -> Expr
+
+    /// Concatenate string-valued expressions, choosing the cheapest String.Concat overload by arity.
+    /// An empty list yields "" and a singleton yields itself.
+    val mkStringConcat: TcGlobals * range * Expr list -> Expr
 
     val mkDecr: TcGlobals -> range -> Expr -> Expr
 
@@ -519,6 +529,11 @@ module internal ExprTransforms =
     val MakeArgsForTopArgs: TcGlobals -> range -> (TType * ArgReprInfo) list list -> TyparInstantiation -> Val list list
 
     val AdjustValForExpectedValReprInfo: TcGlobals -> range -> ValRef -> ValUseFlag -> ValReprInfo -> Expr * TType
+
+    /// Eta-expand an under-applied application of a known-arity value, binding the supplied arguments;
+    /// None when the value is not under-applied (or has no known arity).
+    val TryEtaExpandUnderAppliedValApp:
+        TcGlobals -> range -> ValRef -> ValUseFlag -> tyargs: TypeInst -> fty: TType -> args: Exprs -> Expr option
 
     val AdjustValToHaveValReprInfo: Val -> ParentRef -> ValReprInfo -> unit
 

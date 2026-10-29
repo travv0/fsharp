@@ -445,6 +445,13 @@ type TypeCheckingConfig =
         DumpGraph: bool
     }
 
+[<RequireQualifiedAccess>]
+type ImportReuseKey =
+    {
+        LangVersion: decimal
+        CheckNullness: bool
+    }
+
 [<NoEquality; NoComparison>]
 type TcConfigBuilder =
     {
@@ -598,7 +605,7 @@ type TcConfigBuilder =
         /// If true - every expression in quotations will be augmented with full debug info (fileName, location in file)
         mutable emitDebugInfoInQuotations: bool
 
-        mutable strictIndentation: bool option
+        mutable alwaysInline: bool option
 
         mutable exename: string option
 
@@ -644,6 +651,8 @@ type TcConfigBuilder =
         mutable exiter: Exiter
 
         mutable parallelReferenceResolution: ParallelReferenceResolution
+
+        mutable shareImportedAssemblies: bool
 
         mutable captureIdentifiersWhenParsing: bool
 
@@ -844,6 +853,7 @@ type TcConfigBuilder =
             xmlDocInfoLoader = None
             exiter = QuitProcessExiter
             parallelReferenceResolution = ParallelReferenceResolution.On
+            shareImportedAssemblies = true
             captureIdentifiersWhenParsing = false
             typeCheckingConfig =
                 {
@@ -852,7 +862,7 @@ type TcConfigBuilder =
                 }
             dumpSignatureData = false
             realsig = false
-            strictIndentation = None
+            alwaysInline = None
             compilationMode = TcGlobals.CompilationMode.Unset
         }
 
@@ -1050,7 +1060,7 @@ type TcConfigBuilder =
 
         let reportError =
             ResolvingErrorReport(fun errorType err msg ->
-                let error = err, msg
+                let error = err, RichText.mkText msg
 
                 match errorType with
                 | ErrorReportType.Warning -> warning (Error(error, m))
@@ -1069,11 +1079,7 @@ type TcConfigBuilder =
         // #r "Assembly"
         | NonNull path, Null -> tcConfigB.AddReferencedAssemblyByPath(m, path)
 
-        | _, NonNull dependencyManager ->
-            if tcConfigB.langVersion.SupportsFeature(LanguageFeature.PackageManagement) then
-                tcConfigB.AddDependencyManagerText(dependencyManager, directive, m, path)
-            else
-                errorR (Error(FSComp.SR.packageManagementRequiresVFive (), m))
+        | _, NonNull dependencyManager -> tcConfigB.AddDependencyManagerText(dependencyManager, directive, m, path)
 
         | Null, Null when directive = Directive.Include -> errorR (Error(FSComp.SR.poundiNotSupportedByRegisteredDependencyManagers (), m))
 
@@ -1088,10 +1094,22 @@ type TcConfigBuilder =
         tcConfigB.pathMap <- tcConfigB.pathMap |> PathMap.addMapping oldPrefix newPrefix
 
     static member SplitCommandLineResourceInfo(ri: string) =
-        let p = ri.IndexOf ','
+        let quoteEnd =
+            if ri.StartsWithOrdinal("\"") then
+                ri.IndexOf('"', 1)
+            else
+                -1
+
+        let p = ri.IndexOf(',', quoteEnd + 1)
+        let file = if p <> -1 then ri.Substring(0, p) else ri
+
+        let file =
+            if quoteEnd > 0 && quoteEnd = file.Length - 1 then
+                file.Substring(1, file.Length - 2)
+            else
+                file
 
         if p <> -1 then
-            let file = String.sub ri 0 p
             let rest = String.sub ri (p + 1) (String.length ri - p - 1)
             let p = rest.IndexOf ','
 
@@ -1108,7 +1126,7 @@ type TcConfigBuilder =
             else
                 file, rest, ILResourceAccess.Public
         else
-            ri, FileSystemUtils.fileNameOfPath ri, ILResourceAccess.Public
+            file, FileSystemUtils.fileNameOfPath file, ILResourceAccess.Public
 
 //----------------------------------------------------------------------------
 // TcConfig
@@ -1142,7 +1160,7 @@ type TcConfig private (data: TcConfigBuilder, validate: bool) =
             else
                 // If the file doesn't exist, let reference resolution logic report the error later...
                 defaultCoreLibraryReference,
-                if equals assemRef.Range rangeStartup then
+                if Range.equals assemRef.Range rangeStartup then
                     Some fileName
                 else
                     None
@@ -1252,7 +1270,14 @@ type TcConfig private (data: TcConfigBuilder, validate: bool) =
     member _.bufferWidth = data.bufferWidth
     member _.fsiMultiAssemblyEmit = data.fsiMultiAssemblyEmit
     member _.FxResolver = data.FxResolver
-    member _.strictIndentation = data.strictIndentation
+
+    member _.alwaysInline =
+        data.alwaysInline
+        |> Option.defaultValue (
+            data.optSettings.LocalOptimizationsEnabled
+            || data.extraOptimizationIterations > 0
+        )
+
     member _.primaryAssembly = data.primaryAssembly
     member _.noFeedback = data.noFeedback
     member _.stackReserveSize = data.stackReserveSize
@@ -1390,8 +1415,16 @@ type TcConfig private (data: TcConfigBuilder, validate: bool) =
     member _.xmlDocInfoLoader = data.xmlDocInfoLoader
     member _.exiter = data.exiter
     member _.parallelReferenceResolution = data.parallelReferenceResolution
+    member _.shareImportedAssemblies = data.shareImportedAssemblies
     member _.captureIdentifiersWhenParsing = data.captureIdentifiersWhenParsing
     member _.typeCheckingConfig = data.typeCheckingConfig
+
+    member _.importReuseKey =
+        {
+            ImportReuseKey.LangVersion = data.langVersion.SpecifiedVersion
+            ImportReuseKey.CheckNullness = data.checkNullness
+        }
+
     member _.dumpSignatureData = data.dumpSignatureData
     member _.realsig = data.realsig
     member _.compilationMode = data.compilationMode

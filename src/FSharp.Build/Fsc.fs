@@ -16,6 +16,7 @@ open Internal.Utilities
 //The goal is to have the most common/important flags available via the Fsc class, and the
 //rest can be "backdoored" through the .OtherFlags property.
 
+[<MSBuildMultiThreadableTask>]
 type public Fsc() as this =
 
     inherit ToolTask()
@@ -58,6 +59,7 @@ type public Fsc() as this =
     let mutable preferredUILang: string | null = null
     let mutable publicSign: bool = false
     let mutable provideCommandLineArgs: bool = false
+    let mutable alwaysInline: bool option = None
     let mutable realsig: bool option = None
     let mutable references: ITaskItem[] = [||]
     let mutable referencePath: string | null = null
@@ -72,15 +74,7 @@ type public Fsc() as this =
     let mutable targetType: string | null = null
 
     let defaultToolPath =
-        let locationOfThisDll =
-            try
-                Some(Path.GetDirectoryName(typeof<Fsc>.Assembly.Location))
-            with _ ->
-                None
-
-        match FSharpEnvironment.BinFolderOfDefaultFSharpCompiler(locationOfThisDll) with
-        | Some s -> s
-        | None -> ""
+        lazy (TaskEnvironmentPaths.defaultCompilerToolPath this.TaskEnvironment typeof<Fsc>)
 
     let mutable treatWarningsAsErrors: bool = false
     let mutable useStandardResourceNames: bool = false
@@ -200,6 +194,9 @@ type public Fsc() as this =
         else
             builder.AppendSwitch("--optimize-")
 
+        // AlwaysInline
+        builder.AppendOptionalSwitch("--always-inline", alwaysInline)
+
         // realsig
         builder.AppendOptionalSwitch("--realsig", realsig)
 
@@ -253,14 +250,16 @@ type public Fsc() as this =
 
         // Resources
         for item in resources do
+            let fileName =
+                if item.ItemSpec.IndexOf(',') >= 0 then
+                    $"\"{item.ItemSpec}\""
+                else
+                    item.ItemSpec
+
             match useStandardResourceNames with
             | true ->
-                builder.AppendSwitchIfNotNull(
-                    "--resource:",
-                    item.ItemSpec,
-                    [| item.GetMetadata("LogicalName"); item.GetMetadata("Access") |]
-                )
-            | false -> builder.AppendSwitchIfNotNull("--resource:", item.ItemSpec)
+                builder.AppendSwitchIfNotNull("--resource:", fileName, [| item.GetMetadata("LogicalName"); item.GetMetadata("Access") |])
+            | false -> builder.AppendSwitchIfNotNull("--resource:", fileName)
 
         // VersionFile
         builder.AppendSwitchIfNotNull("--versionfile:", versionFile)
@@ -560,6 +559,14 @@ type public Fsc() as this =
         with get () = publicSign
         and set (s) = publicSign <- s
 
+    // --always-inline[+-]
+    member _.AlwaysInline
+        with get () =
+            match alwaysInline with
+            | Some true -> true
+            | _ -> false
+        and set (b) = alwaysInline <- Some b
+
     // --realsig[+-]
     member _.RealSig
         with get () =
@@ -715,10 +722,12 @@ type public Fsc() as this =
             base.StandardOutputEncoding
 
     override fsc.GenerateFullPathToTool() =
+        let defaultToolPath = defaultToolPath.Value
+
         if defaultToolPath = "" then
             raise (new System.InvalidOperationException(FSBuild.SR.toolpathUnknown ()))
 
-        System.IO.Path.Combine(defaultToolPath, fsc.ToolExe)
+        TaskEnvironmentPaths.normalizePathToTool fsc.TaskEnvironment (System.IO.Path.Combine(defaultToolPath, fsc.ToolExe))
 
     override fsc.LogToolCommand(message: string) =
         fsc.Log.LogMessageFromText(message, MessageImportance.Normal) |> ignore
@@ -739,6 +748,10 @@ type public Fsc() as this =
         if skipCompilerExecution then
             0
         else
+            // Root once so both the base call and the HostObject delegate use the same rooted path.
+            let pathToTool =
+                TaskEnvironmentPaths.normalizePathToTool fsc.TaskEnvironment pathToTool
+
             let host = box fsc.HostObject
 
             match host with
