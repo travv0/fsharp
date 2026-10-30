@@ -379,7 +379,7 @@ let a, b: int = ()
         |> shouldFail
         |> withDiagnostics [
             (Error 1, Line 2, Col 5, Line 2, Col 9,
-             "This expression was expected to have type\n    'int'    \nbut here has type\n    ''a * 'b'    ")
+             "This expression was expected to have type\n    'int'    \nbut is a tuple of type\n    ''a * 'b'    ")
             (Error 1, Line 2, Col 17, Line 2, Col 19,
              "This expression was expected to have type\n    ''a * 'b'    \nbut here has type\n    'unit'    ")
         ]
