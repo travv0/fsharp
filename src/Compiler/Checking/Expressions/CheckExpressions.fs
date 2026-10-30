@@ -11716,15 +11716,15 @@ and TcNormalizedBinding declKind (cenv: cenv) env tpenv overallTy safeThisValOpt
         // (see mkSynBindingRhs in SyntaxTreeOps.fs). Unwrap it and unify the annotation
         // with the binding type separately so that type errors on the RHS report the actual
         // expression type, not the annotation type.
-        let rhsExpr =
+        let rhsExpr, tpenv =
             match rtyOpt, rhsExpr with
             | Some (SynBindingReturnInfo(typeName = retInfoTy; range = mRetTy)), SynExpr.Typed(innerExpr, _, _) when spatsL.IsEmpty ->
-                let retTy, _ = TcTypeAndRecover cenv NewTyparsOK CheckCxs ItemOccurrence.UseInType WarnOnIWSAM.Yes envinner tpenv retInfoTy
+                let retTy, tpenv = TcTypeAndRecover cenv NewTyparsOK CheckCxs ItemOccurrence.UseInType WarnOnIWSAM.Yes envinner tpenv retInfoTy
                 try UnifyTypes cenv envinner pat.Range retTy overallExprTy
                 with RecoverableException exn -> errorRecovery exn mRetTy
-                innerExpr
+                innerExpr, tpenv
             | _ ->
-                rhsExpr
+                rhsExpr, tpenv
 
         // Now check the right of the binding.
         //
