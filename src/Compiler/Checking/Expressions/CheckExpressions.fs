@@ -11716,6 +11716,8 @@ and TcNormalizedBinding declKind (cenv: cenv) env tpenv overallTy safeThisValOpt
         // (see mkSynBindingRhs in SyntaxTreeOps.fs). Unwrap it and unify the annotation
         // with the binding type separately so that type errors on the RHS report the actual
         // expression type, not the annotation type.
+        // Literal evaluation still needs the annotation: [<Literal>] let x: ValueType = 1
+        let annotatedRhsExpr = rhsExpr
         let rhsExpr, tpenv =
             match rtyOpt, rhsExpr with
             | Some (SynBindingReturnInfo(typeName = retInfoTy; range = mRetTy)), SynExpr.Typed(innerExpr, _, _) when spatsL.IsEmpty ->
@@ -11799,7 +11801,7 @@ and TcNormalizedBinding declKind (cenv: cenv) env tpenv overallTy safeThisValOpt
                 errorR(Error(FSComp.SR.tcInvalidStructReturn(), mBinding))
 
         // Check other attributes
-        let hasLiteralAttr, literalValue = TcLiteral cenv overallExprTy env tpenv (valAttribs, rhsExpr)
+        let hasLiteralAttr, literalValue = TcLiteral cenv overallExprTy env tpenv (valAttribs, annotatedRhsExpr)
 
         if hasLiteralAttr then
             if isThreadStatic then
